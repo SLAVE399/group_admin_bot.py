@@ -64,7 +64,8 @@ Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply ka
 | `/truth` | Random truth question deta hai |
 | `/dare` | Random dare challenge deta hai |
 | `/tr <language>` | (reply karke) Message translate karta hai |
-| `/game` | Word chain game start/stop karta hai — har round harder hota jata hai |
+| `/game` | Word chain game — lobby khulta hai, `/game` dobara bhejo start karne ke liye |
+| `/join` | Open lobby me join karta hai (kam se kam 2 players chahiye) |
 | `/info` | Apna ya kisi aur ka info dikhata hai |
 | `/developer` | Bot ke developer (@liesworlds) ki details dikhata hai |
 
