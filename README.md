@@ -54,6 +54,7 @@
 | `/rules` | Group rules dikhata hai |
 | `/setrules <text>` | Rules set karta hai |
 | `/info` | Apna ya (reply karke) kisi aur ka info dikhata hai |
+| `/developer` | Bot ke developer (@liesworlds) ki details dikhata hai |
 
 ## Railway pe Deploy Karna
 
