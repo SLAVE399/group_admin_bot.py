@@ -27,10 +27,11 @@ import random
 from datetime import timedelta
 
 from google import genai
-from telegram import Update, ChatPermissions, BotCommand
+from telegram import Update, ChatPermissions, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus, ChatType
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -201,11 +202,10 @@ NO_TARGET_TEXT = (
 # ---------------------------------------------------------------------------
 # BASIC COMMANDS
 # ---------------------------------------------------------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 *Hello! I'm your group's management assistant.*\n\n"
-        "Make me an *ADMIN*, then target a user either by *replying* to "
-        "their message or with *@username* right after the command.\n\n"
+# ---------------------------------------------------------------------------
+def build_commands_text() -> str:
+    return (
+        "*📋 All Commands*\n\n"
         "*🛡️ Moderation*\n"
         "👢 /kick — remove a user (can rejoin)\n"
         "🔨 /ban — permanently ban a user\n"
@@ -237,9 +237,44 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🙋 /join — join an open lobby\n\n"
         "*ℹ️ Other*\n"
         "👤 /info — view a user's info\n"
-        "👨‍💻 /developer — meet the bot's developer",
-        parse_mode="Markdown",
+        "👨‍💻 /developer — meet the bot's developer\n\n"
+        "Targeting a user: *reply* to their message, or add *@username* right after the command."
     )
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bot_username = context.bot.username
+    add_to_group_url = (
+        f"https://t.me/{bot_username}?startgroup=true"
+        "&admin=delete_messages+restrict_members+invite_users+pin_messages+promote_members"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add me to your Group", url=add_to_group_url)],
+        [
+            InlineKeyboardButton("📋 All Commands", callback_data="show_commands"),
+            InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/liesworlds"),
+        ],
+    ])
+    await update.message.reply_text(
+        "👋 *Hello! I'm your group's management assistant.*\n\n"
+        "I handle moderation (kick/ban/mute/warn), group setup (filters, blocklist, "
+        "welcome messages), and fun stuff (truth/dare, translation, a word chain game) — "
+        "all in one bot.\n\n"
+        "Tap *Add me to your Group* below to get started, then make me an *ADMIN* "
+        "so moderation commands work properly.",
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
+
+
+async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_commands_text(), parse_mode="Markdown")
+
+
+async def show_commands_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(build_commands_text(), parse_mode="Markdown")
 
 
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -960,7 +995,8 @@ async def handle_group_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ---------------------------------------------------------------------------
 BOT_COMMANDS = [
-    BotCommand("start", "👋 Show help and command list"),
+    BotCommand("start", "👋 Show welcome message and buttons"),
+    BotCommand("commands", "📋 List all bot commands"),
     BotCommand("info", "👤 View user info"),
     BotCommand("developer", "👨‍💻 Meet the bot's developer"),
     BotCommand("kick", "👢 Remove a user (can rejoin)"),
@@ -1005,6 +1041,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("commands", commands_cmd))
+    app.add_handler(CallbackQueryHandler(show_commands_callback, pattern="^show_commands$"))
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("developer", developer))
 
