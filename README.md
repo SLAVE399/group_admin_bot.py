@@ -86,6 +86,7 @@ Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply ka
    - Project ke "Variables" tab me jao
    - Add karo: `TELEGRAM_BOT_TOKEN` = `apna_bot_token`
    - Add karo: `GEMINI_API_KEY` = `apna_free_gemini_key` (aistudio.google.com/apikey se free milegi)
+   - Add karo (optional): `DEVELOPER_CHAT_ID` = `apna_numeric_telegram_id` — isse set karne par, jab bhi koi user bot ko DM me `/start` karega, tumhe notification milegi (naye user ka naam + username + ID ke saath). Apni ID pata karne ke liye Telegram me @userinfobot ko message karo.
    - (Isliye script me hardcode nahi kiya token — env var se hi lega)
 
 4. **Service type check karo:**
