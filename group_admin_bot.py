@@ -29,7 +29,7 @@ import os
 from datetime import timedelta
 
 from google import genai
-from telegram import Update, ChatPermissions
+from telegram import Update, ChatPermissions, BotCommand
 from telegram.constants import ChatMemberStatus, ChatType
 from telegram.ext import (
     Application,
@@ -135,12 +135,13 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = get_target_user(update) or update.effective_user
     admin_status = await is_admin(update, context, target.id)
     text = (
+        f"ℹ️ *User Info*\n\n"
         f"👤 Name: {target.full_name}\n"
         f"🆔 ID: {target.id}\n"
         f"🔗 Username: @{target.username if target.username else 'N/A'}\n"
         f"🛡️ Admin: {'Yes' if admin_status else 'No'}"
     )
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def developer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -503,15 +504,52 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Can't reply right now, please try again in a bit.")
 
 
+async def sticker_echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Replies with the same sticker whenever a user sends one."""
+    if not update.message or not update.message.sticker:
+        return
+    try:
+        await update.message.reply_sticker(update.message.sticker.file_id)
+    except Exception as e:
+        logger.error(f"Sticker echo error: {e}")
+
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
+BOT_COMMANDS = [
+    BotCommand("start", "👋 Show help and command list"),
+    BotCommand("info", "👤 View user info"),
+    BotCommand("developer", "👨‍💻 Meet the bot's developer"),
+    BotCommand("kick", "👢 Remove a user (can rejoin)"),
+    BotCommand("ban", "🔨 Permanently ban a user"),
+    BotCommand("unban", "✅ Unban a user by ID"),
+    BotCommand("mute", "🔇 Mute a user"),
+    BotCommand("unmute", "🔊 Unmute a user"),
+    BotCommand("warn", "⚠️ Warn a user"),
+    BotCommand("warnings", "📋 Check a user's warnings"),
+    BotCommand("resetwarns", "♻️ Reset a user's warnings"),
+    BotCommand("promote", "⬆️ Make a user an admin"),
+    BotCommand("demote", "⬇️ Remove admin rights"),
+    BotCommand("pin", "📌 Pin the replied message"),
+    BotCommand("unpin", "📍 Remove pinned message"),
+    BotCommand("purge", "🧹 Delete messages from reply point"),
+    BotCommand("rules", "📜 View group rules"),
+    BotCommand("setrules", "📝 Set group rules"),
+]
+
+
+async def post_init(app: Application):
+    """Registers the command menu so it shows up when typing '/' in Telegram."""
+    await app.bot.set_my_commands(BOT_COMMANDS)
+
+
 def main():
     if BOT_TOKEN == "PUT_YOUR_BOT_TOKEN_HERE":
         print("⚠️  Pehle BOT_TOKEN set karo (script me ya TELEGRAM_BOT_TOKEN env var me)!")
         return
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
