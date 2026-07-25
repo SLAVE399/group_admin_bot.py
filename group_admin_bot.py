@@ -43,6 +43,7 @@ from telegram.ext import (
 # ---------------------------------------------------------------------------
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+DEVELOPER_CHAT_ID = os.environ.get("DEVELOPER_CHAT_ID", "")  # your numeric Telegram user ID
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 GEMINI_MODEL = "gemini-3.6-flash"
 
@@ -265,6 +266,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=keyboard,
     )
+
+    # Notify the developer whenever someone starts the bot in a private chat
+    if update.effective_chat.type == ChatType.PRIVATE and DEVELOPER_CHAT_ID:
+        user = update.effective_user
+        try:
+            await context.bot.send_message(
+                int(DEVELOPER_CHAT_ID),
+                f"🆕 *New user started the bot!*\n\n"
+                f"👤 Name: {user.full_name}\n"
+                f"🔗 Username: {mention(user)}\n"
+                f"🆔 ID: {user.id}",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.warning(f"Couldn't notify developer of new /start: {e}")
 
 
 async def commands_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
