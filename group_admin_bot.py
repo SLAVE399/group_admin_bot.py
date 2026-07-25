@@ -3,11 +3,14 @@ Telegram Group Admin Bot + AI Chatbot
 --------------------------------------
 Admin Commands: /kick /ban /unban /mute /unmute /warn /warnings /resetwarns
                 /promote /demote /pin /unpin /purge /info /rules /setrules
+                /filters /delfilters /addblocklist /removeblock
+                /setwelcome /delsetwelcome
+Fun Commands:   /truth /dare /tr <language> /game (word chain)
+Chat Feature:   AI chat (Google Gemini, free) + sticker echo
 
-Chat Feature: Bot replies using Google Gemini (free API) when:
-  - Message is in a private chat (DM), OR
-  - Bot is @mentioned in a group, OR
-  - Someone replies to the bot's own message in a group
+Most admin commands accept EITHER:
+  - a reply to the target user's message, e.g. reply + "/ban"
+  - OR "@username" as the first argument, e.g. "/ban @someuser spamming"
 
 Setup:
 1. pip install -r requirements.txt
@@ -16,16 +19,11 @@ Setup:
 4. Add the bot to your group and make it an ADMIN with these rights:
    - Ban users, Delete messages, Pin messages, Add new admins (for /promote)
 5. Run: python group_admin_bot.py
-
-Usage notes:
-- Most admin commands work by REPLYING to the target user's message.
-  Example: reply to someone's message with "/ban" or "/ban spamming"
-- /mute [minutes] -> mutes for given minutes (default: forever until /unmute)
-- Only group admins/owner can use admin commands (checked live via Telegram API)
 """
 
 import logging
 import os
+import random
 from datetime import timedelta
 
 from google import genai
@@ -45,10 +43,7 @@ from telegram.ext import (
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-
-# short in-memory conversation history per chat: {chat_id: [{"role":..,"parts":[..]}, ...]}
-CHAT_HISTORY: dict[int, list] = {}
-MAX_HISTORY_MESSAGES = 10  # keep last N messages (user+model) per chat
+GEMINI_MODEL = "gemini-3.6-flash"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -56,19 +51,80 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# in-memory warning store: {chat_id: {user_id: count}}
-WARNINGS: dict[int, dict[int, int]] = {}
+# ---------------------------------------------------------------------------
+# IN-MEMORY DATA STORES (reset on restart — see README for persistence notes)
+# ---------------------------------------------------------------------------
+CHAT_HISTORY: dict[int, list] = {}          # chat_id -> [{"role","parts"}, ...]
+MAX_HISTORY_MESSAGES = 10
+
+WARNINGS: dict[int, dict[int, int]] = {}    # chat_id -> {user_id: count}
 MAX_WARNINGS = 3
 
-# in-memory rules store: {chat_id: "rules text"}
-RULES: dict[int, str] = {}
+RULES: dict[int, str] = {}                  # chat_id -> rules text
+FILTERS: dict[int, dict[str, str]] = {}     # chat_id -> {trigger: response}
+BLOCKLIST: dict[int, set] = {}              # chat_id -> {blocked words}
+WELCOME: dict[int, str] = {}                # chat_id -> welcome template
+GAME_STATE: dict[int, dict] = {}            # chat_id -> word-chain game state
 
+TRUTH_QUESTIONS = [
+    "What's the most embarrassing thing that's ever happened to you?",
+    "What's a secret you've never told anyone in this group?",
+    "What's your biggest fear?",
+    "Who was your first crush?",
+    "What's the weirdest dream you've ever had?",
+    "What's a lie you told that you never got caught for?",
+    "What's the most childish thing you still do?",
+    "What app do you spend the most time on and why?",
+    "What's your most irrational fear?",
+    "What's something you pretend to like but actually hate?",
+    "What's the last thing you Googled?",
+    "What's your worst habit?",
+    "Have you ever cheated on a test?",
+    "What's the most trouble you've ever been in?",
+    "What's your most used emoji and why?",
+    "What's a talent you're embarrassed to admit you have?",
+    "What's the pettiest thing you've ever done?",
+    "Who in this group would you trust with a secret?",
+    "What's your guilty pleasure song?",
+    "What's the weirdest food combination you actually enjoy?",
+]
+
+DARE_CHALLENGES = [
+    "Send the last photo in your gallery (no cheating!).",
+    "Text your crush 'hi' right now.",
+    "Speak in an accent for the next 3 messages.",
+    "Change your profile picture to something silly for 10 minutes.",
+    "Send a voice note singing your favorite song.",
+    "Type your next message using only emojis.",
+    "Reply to this using only one hand... just kidding, tell everyone your last search history topic.",
+    "Do 10 push-ups right now and tell us you did.",
+    "Send a message in all caps confessing your favorite guilty pleasure show.",
+    "Let the group pick your profile bio for the next hour.",
+    "Message the last person you texted and say 'I miss you'.",
+    "Post a throwback photo from 3+ years ago.",
+    "Talk in rhymes for your next 3 messages.",
+    "Tell the group your most-used autocorrect fail.",
+    "Impersonate another group member for one message.",
+    "Send a compliment to the person above you in chat.",
+    "Reveal the last app you downloaded.",
+    "Type out the alphabet backwards without checking.",
+    "Send a fun fact nobody in the group knows about you.",
+    "Set your status to something funny for 1 hour.",
+]
 
 # ---------------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------------
+class TargetUser:
+    """Minimal user-like wrapper so both reply-based and @username-based
+    targets can be handled the same way."""
+    def __init__(self, id, full_name, username=None):
+        self.id = id
+        self.full_name = full_name
+        self.username = username
+
+
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    """Check if a user is admin/owner in the current chat."""
     try:
         member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
         return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
@@ -78,7 +134,6 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: 
 
 
 async def require_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Ensures command sender is an admin. Sends a warning message if not."""
     user = update.effective_user
     if not await is_admin(update, context, user.id):
         await update.message.reply_text("❌ Only group admins can use this command.")
@@ -87,10 +142,31 @@ async def require_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
 
 
 def get_target_user(update: Update):
-    """Returns the user object of the message being replied to, else None."""
     if update.message.reply_to_message:
         return update.message.reply_to_message.from_user
     return None
+
+
+async def get_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resolves the command's target user via reply OR a leading @username
+    argument. Returns (target_or_None, remaining_args)."""
+    args = list(context.args) if context.args else []
+    if args and args[0].startswith("@"):
+        username = args[0][1:]
+        try:
+            chat = await context.bot.get_chat(f"@{username}")
+            full_name = getattr(chat, "first_name", None) or username
+            if getattr(chat, "last_name", None):
+                full_name += f" {chat.last_name}"
+            target = TargetUser(chat.id, full_name, getattr(chat, "username", username))
+            return target, args[1:]
+        except Exception as e:
+            logger.warning(f"Couldn't resolve @{username}: {e}")
+            return None, args[1:]
+    reply_user = get_target_user(update)
+    if reply_user:
+        return reply_user, args
+    return None, args
 
 
 async def ensure_bot_is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -103,36 +179,57 @@ async def ensure_bot_is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE
     return True
 
 
+NO_TARGET_TEXT = (
+    "⚠️ Specify a user — reply to their message, or use *@username* right after the command."
+)
+
+
 # ---------------------------------------------------------------------------
 # BASIC COMMANDS
 # ---------------------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Hello! I'm a group management bot.\n\n"
-        "Make me an ADMIN, then REPLY to a user's message "
-        "to use these commands:\n\n"
-        "👢 /kick - remove user from group (can rejoin)\n"
-        "🔨 /ban - permanently ban user\n"
-        "✅ /unban <user_id> - unban a user\n"
-        "🔇 /mute [minutes] - mute user\n"
-        "🔊 /unmute - unmute user\n"
-        "⚠️ /warn [reason] - warn user\n"
-        "📋 /warnings - check user's warnings\n"
-        "♻️ /resetwarns - reset user's warnings\n"
-        "⬆️ /promote - make user an admin\n"
-        "⬇️ /demote - remove user's admin rights\n"
-        "📌 /pin - pin the replied message\n"
-        "📍 /unpin - remove pinned message\n"
-        "🧹 /purge - delete messages from reply point onward\n"
-        "📜 /rules - view group rules\n"
-        "📝 /setrules <text> - set group rules (admin only)\n"
-        "👤 /info - view your own or another user's info\n"
-        "👨‍💻 /developer - meet the bot's developer"
+        "👋 *Hello! I'm your group's management assistant.*\n\n"
+        "Make me an *ADMIN*, then target a user either by *replying* to "
+        "their message or with *@username* right after the command.\n\n"
+        "*🛡️ Moderation*\n"
+        "👢 /kick — remove a user (can rejoin)\n"
+        "🔨 /ban — permanently ban a user\n"
+        "✅ /unban <user_id or @username> — unban a user\n"
+        "🔇 /mute [minutes] — mute a user\n"
+        "🔊 /unmute — unmute a user\n"
+        "⚠️ /warn [reason] — warn a user\n"
+        "📋 /warnings — check a user's warnings\n"
+        "♻️ /resetwarns — reset a user's warnings\n"
+        "⬆️ /promote — make a user an admin\n"
+        "⬇️ /demote — remove admin rights\n"
+        "📌 /pin — pin the replied message\n"
+        "📍 /unpin — remove the pinned message\n"
+        "🧹 /purge — delete messages from reply point onward\n\n"
+        "*⚙️ Group Setup*\n"
+        "📜 /rules — view group rules\n"
+        "📝 /setrules <text> — set group rules\n"
+        "🧩 /filters <trigger> <response> — add an auto-reply\n"
+        "🗑️ /delfilters <trigger> — remove an auto-reply\n"
+        "🚫 /addblocklist <words> — block words from being sent\n"
+        "♻️ /removeblock <words> — unblock words\n"
+        "💬 /setwelcome <text> — set a welcome message ({name} = user)\n"
+        "🗑️ /delsetwelcome — remove the welcome message\n\n"
+        "*🎉 Fun*\n"
+        "🤔 /truth — random truth question\n"
+        "🔥 /dare — random dare challenge\n"
+        "🌐 /tr <language> — translate a replied message\n"
+        "🔗 /game — start/stop the word chain game\n\n"
+        "*ℹ️ Other*\n"
+        "👤 /info — view a user's info\n"
+        "👨‍💻 /developer — meet the bot's developer",
+        parse_mode="Markdown",
     )
 
 
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target = get_target_user(update) or update.effective_user
+    target, _ = await get_target(update, context)
+    target = target or update.effective_user
     admin_status = await is_admin(update, context, target.id)
     text = (
         f"ℹ️ *User Info*\n\n"
@@ -148,8 +245,7 @@ async def developer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👨‍💻 *About my developer*\n\n"
         "I was built and maintained by @liesworlds ✨\n"
-        "If you'd like new features, have feedback, or found a bug — "
-        "feel free to reach out to them directly!",
+        "For new features, feedback, or bug reports — feel free to reach out directly!",
         parse_mode="Markdown",
     )
 
@@ -160,15 +256,15 @@ async def developer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context) or not await ensure_bot_is_admin(update, context):
         return
-    target = get_target_user(update)
+    target, _ = await get_target(update, context)
     if not target:
-        await update.message.reply_text("⚠️ Reply to the user's message you want to kick with /kick.")
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="Markdown")
         return
     chat_id = update.effective_chat.id
     try:
         await context.bot.ban_chat_member(chat_id, target.id)
-        await context.bot.unban_chat_member(chat_id, target.id)  # unban so they can rejoin
-        await update.message.reply_text(f"👢 {target.full_name} has been kicked from the group.")
+        await context.bot.unban_chat_member(chat_id, target.id)
+        await update.message.reply_text(f"👢 *{target.full_name}* has been kicked from the group.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Kick failed: {e}")
 
@@ -176,15 +272,15 @@ async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context) or not await ensure_bot_is_admin(update, context):
         return
-    target = get_target_user(update)
+    target, args = await get_target(update, context)
     if not target:
-        await update.message.reply_text("⚠️ Reply to the user's message you want to ban with /ban.")
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="Markdown")
         return
-    reason = " ".join(context.args) if context.args else "No reason given"
+    reason = " ".join(args) if args else "No reason given"
     chat_id = update.effective_chat.id
     try:
         await context.bot.ban_chat_member(chat_id, target.id)
-        await update.message.reply_text(f"🔨 {target.full_name} has been banned.\nReason: {reason}")
+        await update.message.reply_text(f"🔨 *{target.full_name}* has been banned.\n📝 Reason: {reason}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Ban failed: {e}")
 
@@ -193,12 +289,17 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context) or not await ensure_bot_is_admin(update, context):
         return
     if not context.args:
-        await update.message.reply_text("⚠️ Use: /unban <user_id>")
+        await update.message.reply_text("⚠️ Use: /unban <user_id> or /unban @username")
         return
+    identifier = context.args[0]
     try:
-        user_id = int(context.args[0])
+        if identifier.startswith("@"):
+            chat = await context.bot.get_chat(identifier)
+            user_id = chat.id
+        else:
+            user_id = int(identifier)
         await context.bot.unban_chat_member(update.effective_chat.id, user_id, only_if_banned=True)
-        await update.message.reply_text(f"✅ User {user_id} has been unbanned.")
+        await update.message.reply_text(f"✅ User {identifier} has been unbanned.")
     except Exception as e:
         await update.message.reply_text(f"❌ Unban failed: {e}")
 
@@ -209,42 +310,33 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context) or not await ensure_bot_is_admin(update, context):
         return
-    target = get_target_user(update)
+    target, args = await get_target(update, context)
     if not target:
-        await update.message.reply_text("⚠️ Reply to the user's message you want to mute with /mute.")
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="Markdown")
         return
 
     minutes = None
-    if context.args:
+    if args:
         try:
-            minutes = int(context.args[0])
+            minutes = int(args[0])
         except ValueError:
             await update.message.reply_text("⚠️ Enter minutes as a number. Example: /mute 30")
             return
 
     permissions = ChatPermissions(
-        can_send_messages=False,
-        can_send_audios=False,
-        can_send_documents=False,
-        can_send_photos=False,
-        can_send_videos=False,
-        can_send_video_notes=False,
-        can_send_voice_notes=False,
-        can_send_polls=False,
-        can_send_other_messages=False,
+        can_send_messages=False, can_send_audios=False, can_send_documents=False,
+        can_send_photos=False, can_send_videos=False, can_send_video_notes=False,
+        can_send_voice_notes=False, can_send_polls=False, can_send_other_messages=False,
         can_add_web_page_previews=False,
     )
-
-    until_date = None
-    if minutes:
-        until_date = update.message.date + timedelta(minutes=minutes)
+    until_date = update.message.date + timedelta(minutes=minutes) if minutes else None
 
     try:
         await context.bot.restrict_chat_member(
             update.effective_chat.id, target.id, permissions=permissions, until_date=until_date
         )
         duration_text = f" for {minutes} minutes" if minutes else " (until unmuted)"
-        await update.message.reply_text(f"🔇 {target.full_name} has been muted{duration_text}.")
+        await update.message.reply_text(f"🔇 *{target.full_name}* has been muted{duration_text}.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Mute failed: {e}")
 
@@ -252,26 +344,20 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context) or not await ensure_bot_is_admin(update, context):
         return
-    target = get_target_user(update)
+    target, _ = await get_target(update, context)
     if not target:
-        await update.message.reply_text("⚠️ Reply to the user's message you want to unmute with /unmute.")
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="Markdown")
         return
 
     permissions = ChatPermissions(
-        can_send_messages=True,
-        can_send_audios=True,
-        can_send_documents=True,
-        can_send_photos=True,
-        can_send_videos=True,
-        can_send_video_notes=True,
-        can_send_voice_notes=True,
-        can_send_polls=True,
-        can_send_other_messages=True,
+        can_send_messages=True, can_send_audios=True, can_send_documents=True,
+        can_send_photos=True, can_send_videos=True, can_send_video_notes=True,
+        can_send_voice_notes=True, can_send_polls=True, can_send_other_messages=True,
         can_add_web_page_previews=True,
     )
     try:
         await context.bot.restrict_chat_member(update.effective_chat.id, target.id, permissions=permissions)
-        await update.message.reply_text(f"🔊 {target.full_name} has been unmuted.")
+        await update.message.reply_text(f"🔊 *{target.full_name}* has been unmuted.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Unmute failed: {e}")
 
@@ -282,19 +368,20 @@ async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context) or not await ensure_bot_is_admin(update, context):
         return
-    target = get_target_user(update)
+    target, args = await get_target(update, context)
     if not target:
-        await update.message.reply_text("⚠️ Reply to the user's message you want to warn with /warn.")
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="Markdown")
         return
 
-    reason = " ".join(context.args) if context.args else "No reason given"
+    reason = " ".join(args) if args else "No reason given"
     chat_id = update.effective_chat.id
     WARNINGS.setdefault(chat_id, {})
     WARNINGS[chat_id][target.id] = WARNINGS[chat_id].get(target.id, 0) + 1
     count = WARNINGS[chat_id][target.id]
 
     await update.message.reply_text(
-        f"⚠️ {target.full_name} has been warned. ({count}/{MAX_WARNINGS})\nReason: {reason}"
+        f"⚠️ *{target.full_name}* has been warned. ({count}/{MAX_WARNINGS})\n📝 Reason: {reason}",
+        parse_mode="Markdown",
     )
 
     if count >= MAX_WARNINGS:
@@ -302,29 +389,31 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.ban_chat_member(chat_id, target.id)
             WARNINGS[chat_id][target.id] = 0
             await update.message.reply_text(
-                f"🔨 {target.full_name} reached {MAX_WARNINGS} warnings and has been banned."
+                f"🔨 *{target.full_name}* reached {MAX_WARNINGS} warnings and has been banned.",
+                parse_mode="Markdown",
             )
         except Exception as e:
             await update.message.reply_text(f"❌ Auto-ban failed: {e}")
 
 
 async def warnings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target = get_target_user(update) or update.effective_user
+    target, _ = await get_target(update, context)
+    target = target or update.effective_user
     chat_id = update.effective_chat.id
     count = WARNINGS.get(chat_id, {}).get(target.id, 0)
-    await update.message.reply_text(f"⚠️ {target.full_name}'s warnings: {count}/{MAX_WARNINGS}")
+    await update.message.reply_text(f"📋 *{target.full_name}*'s warnings: {count}/{MAX_WARNINGS}", parse_mode="Markdown")
 
 
 async def resetwarns(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context):
         return
-    target = get_target_user(update)
+    target, _ = await get_target(update, context)
     if not target:
-        await update.message.reply_text("⚠️ Reply to the user's message whose warnings you want to reset with /resetwarns.")
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="Markdown")
         return
     chat_id = update.effective_chat.id
     WARNINGS.setdefault(chat_id, {})[target.id] = 0
-    await update.message.reply_text(f"✅ {target.full_name}'s warnings have been reset.")
+    await update.message.reply_text(f"♻️ *{target.full_name}*'s warnings have been reset.", parse_mode="Markdown")
 
 
 # ---------------------------------------------------------------------------
@@ -333,22 +422,17 @@ async def resetwarns(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context) or not await ensure_bot_is_admin(update, context):
         return
-    target = get_target_user(update)
+    target, _ = await get_target(update, context)
     if not target:
-        await update.message.reply_text("⚠️ Reply to the user's message you want to promote with /promote.")
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="Markdown")
         return
     try:
         await context.bot.promote_chat_member(
-            update.effective_chat.id,
-            target.id,
-            can_change_info=True,
-            can_delete_messages=True,
-            can_invite_users=True,
-            can_restrict_members=True,
-            can_pin_messages=True,
-            can_promote_members=False,
+            update.effective_chat.id, target.id,
+            can_change_info=True, can_delete_messages=True, can_invite_users=True,
+            can_restrict_members=True, can_pin_messages=True, can_promote_members=False,
         )
-        await update.message.reply_text(f"⬆️ {target.full_name} has been made an admin.")
+        await update.message.reply_text(f"⬆️ *{target.full_name}* has been made an admin.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Promote failed: {e}")
 
@@ -356,22 +440,17 @@ async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context) or not await ensure_bot_is_admin(update, context):
         return
-    target = get_target_user(update)
+    target, _ = await get_target(update, context)
     if not target:
-        await update.message.reply_text("⚠️ Reply to the user's message you want to demote with /demote.")
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="Markdown")
         return
     try:
         await context.bot.promote_chat_member(
-            update.effective_chat.id,
-            target.id,
-            can_change_info=False,
-            can_delete_messages=False,
-            can_invite_users=False,
-            can_restrict_members=False,
-            can_pin_messages=False,
-            can_promote_members=False,
+            update.effective_chat.id, target.id,
+            can_change_info=False, can_delete_messages=False, can_invite_users=False,
+            can_restrict_members=False, can_pin_messages=False, can_promote_members=False,
         )
-        await update.message.reply_text(f"⬇️ {target.full_name}'s admin rights have been removed.")
+        await update.message.reply_text(f"⬇️ *{target.full_name}*'s admin rights have been removed.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Demote failed: {e}")
 
@@ -386,9 +465,7 @@ async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Reply to the message you want to pin with /pin.")
         return
     try:
-        await context.bot.pin_chat_message(
-            update.effective_chat.id, update.message.reply_to_message.message_id
-        )
+        await context.bot.pin_chat_message(update.effective_chat.id, update.message.reply_to_message.message_id)
         await update.message.reply_text("📌 Message pinned.")
     except Exception as e:
         await update.message.reply_text(f"❌ Pin failed: {e}")
@@ -399,7 +476,7 @@ async def unpin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         await context.bot.unpin_chat_message(update.effective_chat.id)
-        await update.message.reply_text("📌 Message unpinned.")
+        await update.message.reply_text("📍 Message unpinned.")
     except Exception as e:
         await update.message.reply_text(f"❌ Unpin failed: {e}")
 
@@ -421,9 +498,9 @@ async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.delete_message(chat_id, msg_id)
             deleted += 1
         except Exception:
-            pass  # message might already be deleted / too old
+            pass
 
-    info_msg = await context.bot.send_message(chat_id, f"🧹 {deleted} messages deleted.")
+    await context.bot.send_message(chat_id, f"🧹 {deleted} messages deleted.")
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +509,7 @@ async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = RULES.get(chat_id, "No rules have been set for this group yet.")
-    await update.message.reply_text(f"📜 Group Rules:\n\n{text}")
+    await update.message.reply_text(f"📜 *Group Rules*\n\n{text}", parse_mode="Markdown")
 
 
 async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -446,16 +523,264 @@ async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# AI CHAT (Claude)
+# FILTERS (auto-reply triggers)
+# ---------------------------------------------------------------------------
+async def filters_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_admin(update, context):
+        return
+    chat_id = update.effective_chat.id
+    if not context.args:
+        chat_filters = FILTERS.get(chat_id, {})
+        if not chat_filters:
+            await update.message.reply_text(
+                "🧩 No filters set yet.\nUse: /filters <trigger> <response text>"
+            )
+            return
+        listing = "\n".join(f"• {k}" for k in chat_filters)
+        await update.message.reply_text(f"🧩 *Active Filters*\n\n{listing}", parse_mode="Markdown")
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("⚠️ Use: /filters <trigger> <response text>")
+        return
+    trigger = context.args[0].lower()
+    response = " ".join(context.args[1:])
+    FILTERS.setdefault(chat_id, {})[trigger] = response
+    await update.message.reply_text(f"✅ Filter added — I'll reply whenever someone says \"{trigger}\".")
+
+
+async def delfilters_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_admin(update, context):
+        return
+    if not context.args:
+        await update.message.reply_text("⚠️ Use: /delfilters <trigger>")
+        return
+    trigger = context.args[0].lower()
+    chat_id = update.effective_chat.id
+    if FILTERS.get(chat_id, {}).pop(trigger, None) is not None:
+        await update.message.reply_text(f"🗑️ Filter \"{trigger}\" removed.")
+    else:
+        await update.message.reply_text(f"⚠️ No filter found for \"{trigger}\".")
+
+
+# ---------------------------------------------------------------------------
+# BLOCKLIST (banned words)
+# ---------------------------------------------------------------------------
+async def addblocklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_admin(update, context):
+        return
+    if not context.args:
+        await update.message.reply_text("⚠️ Use: /addblocklist <word1> <word2> ...")
+        return
+    chat_id = update.effective_chat.id
+    words = {w.lower() for w in context.args}
+    BLOCKLIST.setdefault(chat_id, set()).update(words)
+    await update.message.reply_text(f"🚫 Added to blocklist: {', '.join(sorted(words))}")
+
+
+async def removeblock_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_admin(update, context):
+        return
+    if not context.args:
+        await update.message.reply_text("⚠️ Use: /removeblock <word1> <word2> ...")
+        return
+    chat_id = update.effective_chat.id
+    removed = []
+    for w in context.args:
+        w = w.lower()
+        if w in BLOCKLIST.get(chat_id, set()):
+            BLOCKLIST[chat_id].discard(w)
+            removed.append(w)
+    if removed:
+        await update.message.reply_text(f"♻️ Removed from blocklist: {', '.join(removed)}")
+    else:
+        await update.message.reply_text("⚠️ None of those words were in the blocklist.")
+
+
+# ---------------------------------------------------------------------------
+# WELCOME MESSAGE
+# ---------------------------------------------------------------------------
+async def setwelcome_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_admin(update, context):
+        return
+    if not context.args:
+        await update.message.reply_text("⚠️ Use: /setwelcome <message> — use {name} for the new member's name.")
+        return
+    WELCOME[update.effective_chat.id] = " ".join(context.args)
+    await update.message.reply_text("✅ Welcome message has been set.")
+
+
+async def delsetwelcome_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_admin(update, context):
+        return
+    chat_id = update.effective_chat.id
+    if WELCOME.pop(chat_id, None) is not None:
+        await update.message.reply_text("🗑️ Welcome message removed.")
+    else:
+        await update.message.reply_text("⚠️ No welcome message was set.")
+
+
+async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    template = WELCOME.get(chat_id)
+    for member in update.message.new_chat_members:
+        if member.id == context.bot.id:
+            continue  # don't welcome the bot itself
+        text = template.replace("{name}", member.full_name) if template else f"🎉 Welcome to the group, {member.full_name}!"
+        await update.message.reply_text(text)
+
+
+# ---------------------------------------------------------------------------
+# TRUTH / DARE
+# ---------------------------------------------------------------------------
+async def truth_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = random.choice(TRUTH_QUESTIONS)
+    await update.message.reply_text(f"🤔 *Truth:*\n{q}", parse_mode="Markdown")
+
+
+async def dare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    d = random.choice(DARE_CHALLENGES)
+    await update.message.reply_text(f"🔥 *Dare:*\n{d}", parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# TRANSLATE
+# ---------------------------------------------------------------------------
+async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ Use: /tr <language> (reply to a message) or /tr <language> <text>")
+        return
+    target_lang = context.args[0]
+
+    if update.message.reply_to_message and update.message.reply_to_message.text:
+        source_text = update.message.reply_to_message.text
+    elif len(context.args) > 1:
+        source_text = " ".join(context.args[1:])
+    else:
+        await update.message.reply_text("⚠️ Reply to a message to translate, or add text after the language.")
+        return
+
+    if not gemini_client:
+        await update.message.reply_text("⚠️ Translation needs GEMINI_API_KEY to be set.")
+        return
+
+    try:
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[{"role": "user", "parts": [{"text": source_text}]}],
+            config={
+                "system_instruction": f"Translate the user's message into {target_lang}. Reply with ONLY the translated text, nothing else.",
+                "max_output_tokens": 500,
+            },
+        )
+        translated = response.text or "..."
+        await update.message.reply_text(f"🌐 *Translation ({target_lang}):*\n{translated}", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Translate error: {e}")
+        await update.message.reply_text("❌ Couldn't translate right now, try again shortly.")
+
+
+# ---------------------------------------------------------------------------
+# WORD CHAIN GAME
+# ---------------------------------------------------------------------------
+async def schedule_game_timeout(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    state = GAME_STATE.get(chat_id)
+    if not state:
+        return
+    old_job = state.get("job")
+    if old_job:
+        old_job.schedule_removal()
+    state["job"] = context.job_queue.run_once(
+        game_timeout, state["time_limit"], chat_id=chat_id, name=f"game_{chat_id}"
+    )
+
+
+async def game_timeout(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id
+    state = GAME_STATE.pop(chat_id, None)
+    if not state:
+        return
+    await context.bot.send_message(
+        chat_id,
+        f"⏰ *Time's up!* Word Chain game over.\n"
+        f"🏆 You reached round {state['round']} (words of {state['min_length']}+ letters)!",
+        parse_mode="Markdown",
+    )
+
+
+async def game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    state = GAME_STATE.get(chat_id)
+
+    if state and state.get("active"):
+        job = state.get("job")
+        if job:
+            job.schedule_removal()
+        GAME_STATE.pop(chat_id, None)
+        await update.message.reply_text(f"🛑 Word Chain game ended. You reached round {state['round']}!")
+        return
+
+    GAME_STATE[chat_id] = {
+        "active": True, "last_word": None, "used_words": set(),
+        "round": 0, "time_limit": 30, "min_length": 3, "job": None,
+    }
+    await update.message.reply_text(
+        "🔗 *Word Chain Game Started!*\n\n"
+        "📋 Rules:\n"
+        "• Send a word starting with the last letter of the previous word\n"
+        "• No repeats\n"
+        "• Gets harder over time — less time, longer words required\n\n"
+        "⏱️ Send any word within 30 seconds to begin!",
+        parse_mode="Markdown",
+    )
+    await schedule_game_timeout(context, chat_id)
+
+
+async def handle_game_word(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Returns True if the message was consumed by an active word-chain game."""
+    chat_id = update.effective_chat.id
+    state = GAME_STATE.get(chat_id)
+    if not state or not state.get("active"):
+        return False
+
+    text = update.message.text.strip().lower()
+    if not text.isalpha():
+        return False
+
+    if text in state["used_words"]:
+        await update.message.reply_text(f"⚠️ \"{text}\" was already used! Try a different word.")
+        return True
+
+    if len(text) < state["min_length"]:
+        await update.message.reply_text(f"⚠️ Word must be at least {state['min_length']} letters long!")
+        return True
+
+    if state["last_word"] and text[0] != state["last_word"][-1]:
+        await update.message.reply_text(f"⚠️ Word must start with \"{state['last_word'][-1].upper()}\"!")
+        return True
+
+    state["used_words"].add(text)
+    state["last_word"] = text
+    state["round"] += 1
+    state["time_limit"] = max(8, state["time_limit"] - 2)
+    if state["round"] % 3 == 0:
+        state["min_length"] += 1
+
+    await update.message.reply_text(
+        f"✅ Round {state['round']}! Next word starts with \"{text[-1].upper()}\" "
+        f"({state['min_length']}+ letters) — ⏱️ {state['time_limit']}s"
+    )
+    await schedule_game_timeout(context, chat_id)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# AI CHAT (Google Gemini)
 # ---------------------------------------------------------------------------
 async def should_respond_as_chatbot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat = update.effective_chat
     message = update.message
-
     if chat.type == ChatType.PRIVATE:
         return True
-
-    # In groups: only respond if bot is @mentioned or the message replies to the bot
     bot_username = context.bot.username
     if message.reply_to_message and message.reply_to_message.from_user.id == context.bot.id:
         return True
@@ -465,30 +790,28 @@ async def should_respond_as_chatbot(update: Update, context: ContextTypes.DEFAUL
 
 
 async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    if update.message.text.startswith("/"):
-        return  # let CommandHandlers deal with commands
     if not await should_respond_as_chatbot(update, context):
         return
     if not gemini_client:
-        await update.message.reply_text(
-            "⚠️ Chat feature won't work — GEMINI_API_KEY is not set."
-        )
+        await update.message.reply_text("⚠️ Chat feature won't work — GEMINI_API_KEY is not set.")
         return
 
     chat_id = update.effective_chat.id
     user_text = update.message.text.replace(f"@{context.bot.username}", "").strip()
 
+    if not user_text:
+        await update.message.reply_text("👋 Haan bolo, kya chahiye?")
+        return
+
     history = CHAT_HISTORY.setdefault(chat_id, [])
     history.append({"role": "user", "parts": [{"text": user_text}]})
-    history[:] = history[-MAX_HISTORY_MESSAGES:]  # trim old messages
+    history[:] = history[-MAX_HISTORY_MESSAGES:]
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-3.6-flash",
+            model=GEMINI_MODEL,
             contents=history,
             config={
                 "system_instruction": "Tum ek friendly Telegram group chatbot ho. Chhote, natural replies do (Hinglish me baat karo).",
@@ -504,14 +827,48 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Can't reply right now, please try again in a bit.")
 
 
+# ---------------------------------------------------------------------------
+# STICKER ECHO
+# ---------------------------------------------------------------------------
 async def sticker_echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Replies with the same sticker whenever a user sends one."""
     if not update.message or not update.message.sticker:
         return
     try:
         await update.message.reply_sticker(update.message.sticker.file_id)
     except Exception as e:
         logger.error(f"Sticker echo error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# MASTER TEXT HANDLER (game -> blocklist -> filters -> chatbot, in order)
+# ---------------------------------------------------------------------------
+async def handle_group_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    text = update.message.text
+    if text.startswith("/"):
+        return
+    chat_id = update.effective_chat.id
+
+    if await handle_game_word(update, context):
+        return
+
+    lowered = text.lower()
+    for word in BLOCKLIST.get(chat_id, set()):
+        if word in lowered:
+            try:
+                await update.message.delete()
+            except Exception as e:
+                logger.warning(f"Blocklist delete failed: {e}")
+            await context.bot.send_message(chat_id, "🚫 A message was removed for containing a blocked word.")
+            return
+
+    for trigger, response in FILTERS.get(chat_id, {}).items():
+        if trigger in lowered:
+            await update.message.reply_text(response)
+            return
+
+    await chat_with_ai(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +880,7 @@ BOT_COMMANDS = [
     BotCommand("developer", "👨‍💻 Meet the bot's developer"),
     BotCommand("kick", "👢 Remove a user (can rejoin)"),
     BotCommand("ban", "🔨 Permanently ban a user"),
-    BotCommand("unban", "✅ Unban a user by ID"),
+    BotCommand("unban", "✅ Unban a user"),
     BotCommand("mute", "🔇 Mute a user"),
     BotCommand("unmute", "🔊 Unmute a user"),
     BotCommand("warn", "⚠️ Warn a user"),
@@ -536,11 +893,20 @@ BOT_COMMANDS = [
     BotCommand("purge", "🧹 Delete messages from reply point"),
     BotCommand("rules", "📜 View group rules"),
     BotCommand("setrules", "📝 Set group rules"),
+    BotCommand("filters", "🧩 Add an auto-reply filter"),
+    BotCommand("delfilters", "🗑️ Remove an auto-reply filter"),
+    BotCommand("addblocklist", "🚫 Block words in the group"),
+    BotCommand("removeblock", "♻️ Unblock words"),
+    BotCommand("setwelcome", "💬 Set the welcome message"),
+    BotCommand("delsetwelcome", "🗑️ Remove the welcome message"),
+    BotCommand("truth", "🤔 Get a random truth question"),
+    BotCommand("dare", "🔥 Get a random dare challenge"),
+    BotCommand("tr", "🌐 Translate a message"),
+    BotCommand("game", "🔗 Start/stop the word chain game"),
 ]
 
 
 async def post_init(app: Application):
-    """Registers the command menu so it shows up when typing '/' in Telegram."""
     await app.bot.set_my_commands(BOT_COMMANDS)
 
 
@@ -577,8 +943,23 @@ def main():
     app.add_handler(CommandHandler("rules", rules))
     app.add_handler(CommandHandler("setrules", setrules))
 
-    # AI chatbot for normal (non-command) text messages
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_ai))
+    app.add_handler(CommandHandler("filters", filters_cmd))
+    app.add_handler(CommandHandler("delfilters", delfilters_cmd))
+
+    app.add_handler(CommandHandler("addblocklist", addblocklist_cmd))
+    app.add_handler(CommandHandler("removeblock", removeblock_cmd))
+
+    app.add_handler(CommandHandler("setwelcome", setwelcome_cmd))
+    app.add_handler(CommandHandler("delsetwelcome", delsetwelcome_cmd))
+
+    app.add_handler(CommandHandler("truth", truth_cmd))
+    app.add_handler(CommandHandler("dare", dare_cmd))
+    app.add_handler(CommandHandler("tr", translate_cmd))
+    app.add_handler(CommandHandler("game", game_cmd))
+
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
+    app.add_handler(MessageHandler(filters.Sticker.ALL, sticker_echo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_text))
 
     print("🤖 Bot chalu ho gaya...")
     app.run_polling()
