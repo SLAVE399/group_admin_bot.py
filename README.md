@@ -12,12 +12,18 @@
    pip install -r requirements.txt
    ```
 
-3. **Token set karo** — do tarike hain:
-   - `group_admin_bot.py` file me `BOT_TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"` line me apna token daal do
-   - YA environment variable set karo:
+3. **Tokens set karo** — do tarike hain:
+   - Environment variables set karo:
      ```
-     export TELEGRAM_BOT_TOKEN="apna_token_yaha"
+     export TELEGRAM_BOT_TOKEN="apna_telegram_token_yaha"
+     export GEMINI_API_KEY="apna_gemini_key_yaha"
      ```
+   - YA `group_admin_bot.py` file me `BOT_TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"` line me apna token daal do (Gemini key ke liye bhi wahi tarika)
+
+   **Free Gemini API key kaise banaye:**
+   - [aistudio.google.com/apikey](https://aistudio.google.com/apikey) pe jao
+   - Google account se login karo
+   - "Create API Key" dabao — bina card ke free key mil jayegi
 
 4. **Bot ko group me add karo:**
    - Apne group me bot ko add karo
@@ -57,9 +63,10 @@
    - [railway.app](https://railway.app) pe login karo
    - "New Project" → "Deploy from GitHub repo" → apna repo select karo
 
-3. **Environment variable set karo:**
+3. **Environment variables set karo:**
    - Project ke "Variables" tab me jao
    - Add karo: `TELEGRAM_BOT_TOKEN` = `apna_bot_token`
+   - Add karo: `GEMINI_API_KEY` = `apna_free_gemini_key` (aistudio.google.com/apikey se free milegi)
    - (Isliye script me hardcode nahi kiya token — env var se hi lega)
 
 4. **Service type check karo:**
