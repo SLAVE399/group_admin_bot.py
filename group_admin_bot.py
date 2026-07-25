@@ -111,22 +111,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Hello! I'm a group management bot.\n\n"
         "Make me an ADMIN, then REPLY to a user's message "
         "to use these commands:\n\n"
-        "/kick - remove user from group (can rejoin)\n"
-        "/ban - permanently ban user\n"
-        "/unban <user_id> - unban a user\n"
-        "/mute [minutes] - mute user\n"
-        "/unmute - unmute user\n"
-        "/warn [reason] - warn user\n"
-        "/warnings - check user's warnings\n"
-        "/resetwarns - reset user's warnings\n"
-        "/promote - make user an admin\n"
-        "/demote - remove user's admin rights\n"
-        "/pin - pin the replied message\n"
-        "/unpin - remove pinned message\n"
-        "/purge - delete messages from reply point onward\n"
-        "/rules - view group rules\n"
-        "/setrules <text> - set group rules (admin only)\n"
-        "/info - view your own or another user's info"
+        "👢 /kick - remove user from group (can rejoin)\n"
+        "🔨 /ban - permanently ban user\n"
+        "✅ /unban <user_id> - unban a user\n"
+        "🔇 /mute [minutes] - mute user\n"
+        "🔊 /unmute - unmute user\n"
+        "⚠️ /warn [reason] - warn user\n"
+        "📋 /warnings - check user's warnings\n"
+        "♻️ /resetwarns - reset user's warnings\n"
+        "⬆️ /promote - make user an admin\n"
+        "⬇️ /demote - remove user's admin rights\n"
+        "📌 /pin - pin the replied message\n"
+        "📍 /unpin - remove pinned message\n"
+        "🧹 /purge - delete messages from reply point onward\n"
+        "📜 /rules - view group rules\n"
+        "📝 /setrules <text> - set group rules (admin only)\n"
+        "👤 /info - view your own or another user's info\n"
+        "👨‍💻 /developer - meet the bot's developer"
     )
 
 
@@ -140,6 +141,16 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🛡️ Admin: {'Yes' if admin_status else 'No'}"
     )
     await update.message.reply_text(text)
+
+
+async def developer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👨‍💻 *About my developer*\n\n"
+        "I was built and maintained by @liesworlds ✨\n"
+        "If you'd like new features, have feedback, or found a bug — "
+        "feel free to reach out to them directly!",
+        parse_mode="Markdown",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +487,7 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=history,
             config={
                 "system_instruction": "Tum ek friendly Telegram group chatbot ho. Chhote, natural replies do (Hinglish me baat karo).",
@@ -505,6 +516,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("info", info))
+    app.add_handler(CommandHandler("developer", developer))
 
     app.add_handler(CommandHandler("kick", kick))
     app.add_handler(CommandHandler("ban", ban))
