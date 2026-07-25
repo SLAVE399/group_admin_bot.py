@@ -36,25 +36,39 @@
 
 ## Commands
 
+Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply karke, YA seedha `@username` command ke saath (jaise `/ban @someuser spamming`).
+
 | Command | Kya karta hai |
 |---|---|
-| `/kick` | (reply karke) User ko group se nikalta hai — dobara aa sakta hai |
-| `/ban [reason]` | (reply karke) User ko permanently ban karta hai |
-| `/unban <user_id>` | User ko unban karta hai |
-| `/mute [minutes]` | (reply karke) User ko mute karta hai — minutes na do to permanent |
-| `/unmute` | (reply karke) User ko unmute karta hai |
-| `/warn [reason]` | (reply karke) Warning deta hai, 3 warnings pe auto-ban |
+| `/kick` | User ko group se nikalta hai — dobara aa sakta hai |
+| `/ban [reason]` | User ko permanently ban karta hai |
+| `/unban <user_id or @username>` | User ko unban karta hai |
+| `/mute [minutes]` | User ko mute karta hai — minutes na do to permanent |
+| `/unmute` | User ko unmute karta hai |
+| `/warn [reason]` | Warning deta hai, 3 warnings pe auto-ban |
 | `/warnings` | User ki warning count dikhata hai |
-| `/resetwarns` | (reply karke) Warnings reset karta hai |
-| `/promote` | (reply karke) User ko admin banata hai |
-| `/demote` | (reply karke) User ko admin se hatata hai |
+| `/resetwarns` | Warnings reset karta hai |
+| `/promote` | User ko admin banata hai |
+| `/demote` | User ko admin se hatata hai |
 | `/pin` | (reply karke) Message pin karta hai |
 | `/unpin` | Pinned message hatata hai |
 | `/purge` | (reply karke) Us message se ab tak sab delete karta hai |
 | `/rules` | Group rules dikhata hai |
 | `/setrules <text>` | Rules set karta hai |
-| `/info` | Apna ya (reply karke) kisi aur ka info dikhata hai |
+| `/filters <trigger> <response>` | Auto-reply add karta hai (koi keyword bole to bot reply karega) |
+| `/delfilters <trigger>` | Auto-reply hataata hai |
+| `/addblocklist <words>` | Un words wale messages auto-delete honge |
+| `/removeblock <words>` | Blocklist se words hataata hai |
+| `/setwelcome <text>` | Naye members ke liye welcome message set karta hai (`{name}` use karo) |
+| `/delsetwelcome` | Welcome message hataata hai |
+| `/truth` | Random truth question deta hai |
+| `/dare` | Random dare challenge deta hai |
+| `/tr <language>` | (reply karke) Message translate karta hai |
+| `/game` | Word chain game start/stop karta hai — har round harder hota jata hai |
+| `/info` | Apna ya kisi aur ka info dikhata hai |
 | `/developer` | Bot ke developer (@liesworlds) ki details dikhata hai |
+
+**Bonus:** Koi bhi sticker bheje to bot wahi sticker wapas bhej deta hai.
 
 ## Railway pe Deploy Karna
 
@@ -83,5 +97,6 @@
 - Zyada tar commands **reply-based** hain — target user ke message pe reply karke command likho.
 - Sirf group admins hi ye commands chala sakte hain (live check hota hai Telegram API se).
 - Bot khud bhi admin hona zaroori hai warna ban/mute/pin kaam nahi karenge.
+- **@username se target karna:** Telegram ki limitation hai ki bot sirf un users ko `@username` se resolve kar sakta hai jinhone kabhi bot ya group me interact kiya ho. Agar `@username` kaam na kare, to reply-based tarika use karo (hamesha kaam karega).
 - Warnings aur rules abhi **memory me** store hote hain — bot restart hone pe reset ho jayenge. Agar permanent chahiye to database (SQLite/PostgreSQL) add karna padega — bata dena agar wo bhi chahiye.
 - 24/7 chalane ke liye ise kisi server/VPS ya Railway/Render jaisi service pe host karna hoga.
