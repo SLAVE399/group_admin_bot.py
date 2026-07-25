@@ -4,7 +4,7 @@ Telegram Group Admin Bot + AI Chatbot
 Admin Commands: /kick /ban /unban /mute /unmute /warn /warnings /resetwarns
                 /promote /demote /pin /unpin /purge /info /rules /setrules
 
-Chat Feature: Bot replies using Claude (Anthropic API) when:
+Chat Feature: Bot replies using Google Gemini (free API) when:
   - Message is in a private chat (DM), OR
   - Bot is @mentioned in a group, OR
   - Someone replies to the bot's own message in a group
@@ -12,7 +12,7 @@ Chat Feature: Bot replies using Claude (Anthropic API) when:
 Setup:
 1. pip install -r requirements.txt
 2. Set TELEGRAM_BOT_TOKEN env var (bot token from BotFather)
-3. Set ANTHROPIC_API_KEY env var (from console.anthropic.com)
+3. Set GEMINI_API_KEY env var (free, from aistudio.google.com/apikey)
 4. Add the bot to your group and make it an ADMIN with these rights:
    - Ban users, Delete messages, Pin messages, Add new admins (for /promote)
 5. Run: python group_admin_bot.py
@@ -28,7 +28,7 @@ import logging
 import os
 from datetime import timedelta
 
-from anthropic import Anthropic
+from google import genai
 from telegram import Update, ChatPermissions
 from telegram.constants import ChatMemberStatus, ChatType
 from telegram.ext import (
@@ -43,12 +43,12 @@ from telegram.ext import (
 # CONFIG
 # ---------------------------------------------------------------------------
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# short in-memory conversation history per chat: {chat_id: [{"role":..,"content":..}, ...]}
+# short in-memory conversation history per chat: {chat_id: [{"role":..,"parts":[..]}, ...]}
 CHAT_HISTORY: dict[int, list] = {}
-MAX_HISTORY_MESSAGES = 10  # keep last N messages (user+assistant) per chat
+MAX_HISTORY_MESSAGES = 10  # keep last N messages (user+model) per chat
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -459,9 +459,9 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return  # let CommandHandlers deal with commands
     if not await should_respond_as_chatbot(update, context):
         return
-    if not anthropic_client:
+    if not gemini_client:
         await update.message.reply_text(
-            "⚠️ Chat feature won't work — ANTHROPIC_API_KEY is not set."
+            "⚠️ Chat feature won't work — GEMINI_API_KEY is not set."
         )
         return
 
@@ -469,20 +469,22 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text.replace(f"@{context.bot.username}", "").strip()
 
     history = CHAT_HISTORY.setdefault(chat_id, [])
-    history.append({"role": "user", "content": user_text})
+    history.append({"role": "user", "parts": [{"text": user_text}]})
     history[:] = history[-MAX_HISTORY_MESSAGES:]  # trim old messages
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
-        response = anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=500,
-            system="Tum ek friendly Telegram group chatbot ho. Chhote, natural replies do (Hinglish me baat karo).",
-            messages=history,
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=history,
+            config={
+                "system_instruction": "Tum ek friendly Telegram group chatbot ho. Chhote, natural replies do (Hinglish me baat karo).",
+                "max_output_tokens": 500,
+            },
         )
-        reply_text = "".join(block.text for block in response.content if block.type == "text")
-        history.append({"role": "assistant", "content": reply_text})
+        reply_text = response.text or "..."
+        history.append({"role": "model", "parts": [{"text": reply_text}]})
         history[:] = history[-MAX_HISTORY_MESSAGES:]
         await update.message.reply_text(reply_text)
     except Exception as e:
