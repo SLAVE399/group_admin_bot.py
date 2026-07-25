@@ -124,6 +124,20 @@ class TargetUser:
         self.username = username
 
 
+def mention(obj) -> str:
+    """Returns a clickable @username mention if available, else a bold name.
+    Accepts telegram.User, TargetUser, or a plain dict with id/full_name/username."""
+    if isinstance(obj, dict):
+        username = obj.get("username")
+        full_name = obj.get("full_name") or "Player"
+    else:
+        username = getattr(obj, "username", None)
+        full_name = getattr(obj, "full_name", None) or "User"
+    if username:
+        return f"@{username}"
+    return f"*{full_name}*"
+
+
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     try:
         member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
@@ -219,7 +233,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤔 /truth — random truth question\n"
         "🔥 /dare — random dare challenge\n"
         "🌐 /tr <language> — translate a replied message\n"
-        "🔗 /game — start/stop the word chain game\n\n"
+        "🔗 /game — open a word chain lobby (send again to start once 2+ joined)\n"
+        "🙋 /join — join an open lobby\n\n"
         "*ℹ️ Other*\n"
         "👤 /info — view a user's info\n"
         "👨‍💻 /developer — meet the bot's developer",
@@ -264,7 +279,7 @@ async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.ban_chat_member(chat_id, target.id)
         await context.bot.unban_chat_member(chat_id, target.id)
-        await update.message.reply_text(f"👢 *{target.full_name}* has been kicked from the group.", parse_mode="Markdown")
+        await update.message.reply_text(f"👢 {mention(target)} has been kicked from the group.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Kick failed: {e}")
 
@@ -280,7 +295,7 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     try:
         await context.bot.ban_chat_member(chat_id, target.id)
-        await update.message.reply_text(f"🔨 *{target.full_name}* has been banned.\n📝 Reason: {reason}", parse_mode="Markdown")
+        await update.message.reply_text(f"🔨 {mention(target)} has been banned.\n📝 Reason: {reason}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Ban failed: {e}")
 
@@ -336,7 +351,7 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update.effective_chat.id, target.id, permissions=permissions, until_date=until_date
         )
         duration_text = f" for {minutes} minutes" if minutes else " (until unmuted)"
-        await update.message.reply_text(f"🔇 *{target.full_name}* has been muted{duration_text}.", parse_mode="Markdown")
+        await update.message.reply_text(f"🔇 {mention(target)} has been muted{duration_text}.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Mute failed: {e}")
 
@@ -357,7 +372,7 @@ async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     try:
         await context.bot.restrict_chat_member(update.effective_chat.id, target.id, permissions=permissions)
-        await update.message.reply_text(f"🔊 *{target.full_name}* has been unmuted.", parse_mode="Markdown")
+        await update.message.reply_text(f"🔊 {mention(target)} has been unmuted.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Unmute failed: {e}")
 
@@ -380,7 +395,7 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = WARNINGS[chat_id][target.id]
 
     await update.message.reply_text(
-        f"⚠️ *{target.full_name}* has been warned. ({count}/{MAX_WARNINGS})\n📝 Reason: {reason}",
+        f"⚠️ {mention(target)} has been warned. ({count}/{MAX_WARNINGS})\n📝 Reason: {reason}",
         parse_mode="Markdown",
     )
 
@@ -389,7 +404,7 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.ban_chat_member(chat_id, target.id)
             WARNINGS[chat_id][target.id] = 0
             await update.message.reply_text(
-                f"🔨 *{target.full_name}* reached {MAX_WARNINGS} warnings and has been banned.",
+                f"🔨 {mention(target)} reached {MAX_WARNINGS} warnings and has been banned.",
                 parse_mode="Markdown",
             )
         except Exception as e:
@@ -401,7 +416,7 @@ async def warnings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = target or update.effective_user
     chat_id = update.effective_chat.id
     count = WARNINGS.get(chat_id, {}).get(target.id, 0)
-    await update.message.reply_text(f"📋 *{target.full_name}*'s warnings: {count}/{MAX_WARNINGS}", parse_mode="Markdown")
+    await update.message.reply_text(f"📋 {mention(target)}'s warnings: {count}/{MAX_WARNINGS}", parse_mode="Markdown")
 
 
 async def resetwarns(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -413,7 +428,7 @@ async def resetwarns(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     WARNINGS.setdefault(chat_id, {})[target.id] = 0
-    await update.message.reply_text(f"♻️ *{target.full_name}*'s warnings have been reset.", parse_mode="Markdown")
+    await update.message.reply_text(f"♻️ {mention(target)}'s warnings have been reset.", parse_mode="Markdown")
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +447,7 @@ async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_change_info=True, can_delete_messages=True, can_invite_users=True,
             can_restrict_members=True, can_pin_messages=True, can_promote_members=False,
         )
-        await update.message.reply_text(f"⬆️ *{target.full_name}* has been made an admin.", parse_mode="Markdown")
+        await update.message.reply_text(f"⬆️ {mention(target)} has been made an admin.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Promote failed: {e}")
 
@@ -450,7 +465,7 @@ async def demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_change_info=False, can_delete_messages=False, can_invite_users=False,
             can_restrict_members=False, can_pin_messages=False, can_promote_members=False,
         )
-        await update.message.reply_text(f"⬇️ *{target.full_name}*'s admin rights have been removed.", parse_mode="Markdown")
+        await update.message.reply_text(f"⬇️ {mention(target)}'s admin rights have been removed.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Demote failed: {e}")
 
@@ -625,7 +640,7 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     for member in update.message.new_chat_members:
         if member.id == context.bot.id:
             continue  # don't welcome the bot itself
-        text = template.replace("{name}", member.full_name) if template else f"🎉 Welcome to the group, {member.full_name}!"
+        text = template.replace("{name}", member.full_name) if template else f"🎉 Welcome to the group, {mention(member)}!"
         await update.message.reply_text(text)
 
 
@@ -680,11 +695,11 @@ async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# WORD CHAIN GAME
+# WORD CHAIN GAME (turn-based, multiplayer, with elimination)
 # ---------------------------------------------------------------------------
 async def schedule_game_timeout(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     state = GAME_STATE.get(chat_id)
-    if not state:
+    if not state or state["phase"] != "playing":
         return
     old_job = state.get("job")
     if old_job:
@@ -696,55 +711,120 @@ async def schedule_game_timeout(context: ContextTypes.DEFAULT_TYPE, chat_id: int
 
 async def game_timeout(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
-    state = GAME_STATE.pop(chat_id, None)
-    if not state:
+    state = GAME_STATE.get(chat_id)
+    if not state or state["phase"] != "playing":
         return
+
+    players = state["players"]
+    if not players:
+        GAME_STATE.pop(chat_id, None)
+        return
+
+    idx = state["current_index"]
+    eliminated = players.pop(idx)
     await context.bot.send_message(
         chat_id,
-        f"⏰ *Time's up!* Word Chain game over.\n"
-        f"🏆 You reached round {state['round']} (words of {state['min_length']}+ letters)!",
+        f"⏰ {mention(eliminated)} ran out of time and is *eliminated*!",
         parse_mode="Markdown",
     )
+
+    if len(players) <= 1:
+        if players:
+            await context.bot.send_message(
+                chat_id, f"🏆 {mention(players[0])} wins the Word Chain game! 🎉", parse_mode="Markdown"
+            )
+        else:
+            await context.bot.send_message(chat_id, "🏁 Game over — no players left!")
+        GAME_STATE.pop(chat_id, None)
+        return
+
+    if idx >= len(players):
+        idx = 0
+    state["current_index"] = idx
+    next_player = players[idx]
+    letter_hint = f"\"{state['last_word'][-1].upper()}\"" if state["last_word"] else "any letter"
+    await context.bot.send_message(
+        chat_id,
+        f"🎯 Next turn: {mention(next_player)} — send a word starting with {letter_hint} "
+        f"({state['min_length']}+ letters) within {state['time_limit']}s!",
+        parse_mode="Markdown",
+    )
+    await schedule_game_timeout(context, chat_id)
 
 
 async def game_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     state = GAME_STATE.get(chat_id)
 
-    if state and state.get("active"):
-        job = state.get("job")
-        if job:
-            job.schedule_removal()
-        GAME_STATE.pop(chat_id, None)
-        await update.message.reply_text(f"🛑 Word Chain game ended. You reached round {state['round']}!")
+    if not state:
+        GAME_STATE[chat_id] = {
+            "phase": "lobby", "players": [], "current_index": 0,
+            "used_words": set(), "last_word": None, "round": 0,
+            "time_limit": 30, "min_length": 3, "job": None,
+        }
+        await update.message.reply_text(
+            "🔗 *Word Chain Game — Lobby Open!*\n\n"
+            "Type /join to enter.\n"
+            "Once at least 2 players have joined, send /game again to start!",
+            parse_mode="Markdown",
+        )
         return
 
-    GAME_STATE[chat_id] = {
-        "active": True, "last_word": None, "used_words": set(),
-        "round": 0, "time_limit": 30, "min_length": 3, "job": None,
-    }
-    await update.message.reply_text(
-        "🔗 *Word Chain Game Started!*\n\n"
-        "📋 Rules:\n"
-        "• Send a word starting with the last letter of the previous word\n"
-        "• No repeats\n"
-        "• Gets harder over time — less time, longer words required\n\n"
-        "⏱️ Send any word within 30 seconds to begin!",
-        parse_mode="Markdown",
-    )
-    await schedule_game_timeout(context, chat_id)
+    if state["phase"] == "lobby":
+        if len(state["players"]) < 2:
+            await update.message.reply_text("⚠️ Need at least 2 players to start! Use /join to join the lobby.")
+            return
+        state["phase"] = "playing"
+        random.shuffle(state["players"])
+        state["current_index"] = 0
+        current = state["players"][0]
+        await update.message.reply_text(
+            f"🚀 *Game Started!* {len(state['players'])} players are in.\n\n"
+            f"📋 Rules: each word must start with the last letter of the previous word, "
+            f"no repeats, and it gets harder every few rounds (less time, longer words).\n\n"
+            f"🎯 First turn: {mention(current)} — send any word within {state['time_limit']}s!",
+            parse_mode="Markdown",
+        )
+        await schedule_game_timeout(context, chat_id)
+        return
+
+    # phase == "playing" -> a second /game call ends it
+    job = state.get("job")
+    if job:
+        job.schedule_removal()
+    GAME_STATE.pop(chat_id, None)
+    await update.message.reply_text(f"🛑 Word Chain game ended at round {state['round']}.")
 
 
-async def handle_game_word(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Returns True if the message was consumed by an active word-chain game."""
+async def join_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     state = GAME_STATE.get(chat_id)
-    if not state or not state.get("active"):
+    if not state or state["phase"] != "lobby":
+        await update.message.reply_text("⚠️ No open lobby right now. Use /game to start one!")
+        return
+    user = update.effective_user
+    if any(p["id"] == user.id for p in state["players"]):
+        await update.message.reply_text("⚠️ You've already joined the lobby!")
+        return
+    player = {"id": user.id, "full_name": user.full_name, "username": user.username}
+    state["players"].append(player)
+    await update.message.reply_text(f"✅ {mention(player)} joined! ({len(state['players'])} players in lobby)", parse_mode="Markdown")
+
+
+async def handle_game_turn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Returns True if the message was consumed as a game move (valid or invalid)."""
+    chat_id = update.effective_chat.id
+    state = GAME_STATE.get(chat_id)
+    if not state or state["phase"] != "playing" or not state["players"]:
         return False
+
+    current = state["players"][state["current_index"]]
+    if update.effective_user.id != current["id"]:
+        return False  # not this player's turn — let the message pass through normally
 
     text = update.message.text.strip().lower()
     if not text.isalpha():
-        return False
+        return False  # not a word attempt at all
 
     if text in state["used_words"]:
         await update.message.reply_text(f"⚠️ \"{text}\" was already used! Try a different word.")
@@ -758,6 +838,7 @@ async def handle_game_word(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text(f"⚠️ Word must start with \"{state['last_word'][-1].upper()}\"!")
         return True
 
+    # valid word — advance turn
     state["used_words"].add(text)
     state["last_word"] = text
     state["round"] += 1
@@ -765,9 +846,13 @@ async def handle_game_word(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if state["round"] % 3 == 0:
         state["min_length"] += 1
 
+    state["current_index"] = (state["current_index"] + 1) % len(state["players"])
+    next_player = state["players"][state["current_index"]]
+
     await update.message.reply_text(
-        f"✅ Round {state['round']}! Next word starts with \"{text[-1].upper()}\" "
-        f"({state['min_length']}+ letters) — ⏱️ {state['time_limit']}s"
+        f"✅ Round {state['round']}! Next turn: {mention(next_player)} — "
+        f"word must start with \"{text[-1].upper()}\" ({state['min_length']}+ letters) — ⏱️ {state['time_limit']}s",
+        parse_mode="Markdown",
     )
     await schedule_game_timeout(context, chat_id)
     return True
@@ -850,7 +935,7 @@ async def handle_group_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
 
-    if await handle_game_word(update, context):
+    if await handle_game_turn(update, context):
         return
 
     lowered = text.lower()
@@ -902,7 +987,8 @@ BOT_COMMANDS = [
     BotCommand("truth", "🤔 Get a random truth question"),
     BotCommand("dare", "🔥 Get a random dare challenge"),
     BotCommand("tr", "🌐 Translate a message"),
-    BotCommand("game", "🔗 Start/stop the word chain game"),
+    BotCommand("game", "🔗 Open/start the word chain game"),
+    BotCommand("join", "🙋 Join the word chain lobby"),
 ]
 
 
@@ -956,6 +1042,7 @@ def main():
     app.add_handler(CommandHandler("dare", dare_cmd))
     app.add_handler(CommandHandler("tr", translate_cmd))
     app.add_handler(CommandHandler("game", game_cmd))
+    app.add_handler(CommandHandler("join", join_cmd))
 
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     app.add_handler(MessageHandler(filters.Sticker.ALL, sticker_echo))
