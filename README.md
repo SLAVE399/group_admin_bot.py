@@ -68,6 +68,9 @@ Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply ka
 | `/join` | Open lobby me join karta hai (kam se kam 2 players chahiye) |
 | `/info` | Apna ya kisi aur ka info dikhata hai |
 | `/developer` | Bot ke developer (@liesworlds) ki details dikhata hai |
+| `/commands` | Sab commands ek jagah list karta hai |
+
+**`/start`** ab buttons ke saath aata hai: **➕ Add me to your Group** (direct group me add karne ka link, admin permissions ke saath), **📋 All Commands**, aur **👨‍💻 Developer**.
 
 **Bonus:** Koi bhi sticker bheje to bot wahi sticker wapas bhej deta hai.
 
