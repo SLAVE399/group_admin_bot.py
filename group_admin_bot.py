@@ -478,7 +478,7 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=500,
-            system="Tum ek friendly Telegram group chatbot ho. Chhote, natural replies do (Hinglish theek hai agar user Hinglish me baat kare).",
+            system="You are a friendly Telegram group chatbot. Keep replies short and natural, and respond in English.",
             messages=history,
         )
         reply_text = "".join(block.text for block in response.content if block.type == "text")
