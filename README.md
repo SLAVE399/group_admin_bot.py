@@ -36,7 +36,7 @@
 
 ## Commands
 
-Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply karke, YA seedha `@username` command ke saath (jaise `/ban @someuser spamming`).
+Zyada tar moderation commands ab **teen tarike** se target le sakte hain: reply karke, `@username` se, YA seedha unki **numeric user ID** se (jaise `/ban 123456789 spamming`) — ID wala tarika tab kaam aata hai jab user ka koi public username na ho.
 
 | Command | Kya karta hai |
 |---|---|
@@ -55,11 +55,13 @@ Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply ka
 | `/purge` | (reply karke) Us message se ab tak sab delete karta hai |
 | `/rules` | Group rules dikhata hai |
 | `/setrules <text>` | Rules set karta hai |
-| `/filters <trigger> <response>` | Auto-reply add karta hai (koi keyword bole to bot reply karega) |
+| `/filters <trigger>` | Reply karke koi message/sticker ke saath — jo bhi koi trigger word bolega, bot wahi bhejega. Bina reply ke `/filters <trigger> <response text>` bhi chalega |
 | `/delfilters <trigger>` | Auto-reply hataata hai |
-| `/addblocklist <words>` | Un words wale messages auto-delete honge |
-| `/removeblock <words>` | Blocklist se words hataata hai |
-| `/setwelcome <text>` | Naye members ke liye welcome message set karta hai (`{name}` use karo) |
+| `/addblacklist <words>` | Reply karke koi message/sticker ke saath — wo group me bhejte hi auto-delete hoga. Bina reply ke `/addblacklist <word1> <word2> ...` bhi chalega. Aakhir me `{warn}` add karo to sender ko warning bhi milegi (jaise `/addblacklist bc {warn}`) |
+| `/removeblock <words>` | Blocklist se words hataata hai (ya sticker pe reply karke hatao) |
+| `/approve` | User ko blocklist se exempt karta hai (admins pehle se hi exempt hote hain) |
+| `/unapprove` | User ki blocklist exemption hataata hai |
+| `/setwelcome [text]` | Reply karke koi message/sticker ke saath welcome message set karo, ya `/setwelcome <text>` likho — `{name}` ya `{username}` se naye member ko mention karo |
 | `/delsetwelcome` | Welcome message hataata hai |
 | `/truth` | Random truth question deta hai |
 | `/dare` | Random dare challenge deta hai |
@@ -69,6 +71,7 @@ Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply ka
 | `/endgame` | Game ko force-end karta hai (sirf admin) |
 | `/info` | Apna ya kisi aur ka info dikhata hai |
 | `/developer` | Bot ke developer (@liesworlds) ki details dikhata hai |
+| `/ping` | Bot online hai ya nahi, aur response speed check karta hai |
 | `/commands` | Sab commands ek jagah list karta hai |
 
 **`/start`** ab buttons ke saath aata hai: **➕ Add me to your Group** (direct group me add karne ka link, admin permissions ke saath), **📋 All Commands**, aur **👨‍💻 Developer**.
@@ -99,6 +102,8 @@ Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply ka
 5. **Deploy** — Railway automatically build aur run kar dega. Logs me "🤖 Bot chalu ho gaya..." dikhna chahiye.
 
 ⚠️ **Note:** Warnings, rules, filters, blocklist, welcome message, aur game state sab **memory me** store hote hain — Railway redeploy/restart (naya push, crash, ya sleep) hone par reset ho jayenge. Permanent chahiye to SQLite/PostgreSQL add karna hoga — bata dena.
+
+**Reliability:** Bot me ab ek global error handler hai — koi bhi unexpected bug aaye to sirf wo ek action fail hoga, **pura bot crash nahi hoga**. Agar `DEVELOPER_CHAT_ID` set hai, to aisi koi bhi error tumhe DM me detail ke saath report ho jayegi (debugging ke liye).
 
 ## Important Notes
 
