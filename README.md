@@ -66,13 +66,16 @@ Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply ka
 | `/tr <language>` | (reply karke) Message translate karta hai |
 | `/game` | Word chain game — lobby khulta hai, `/game` dobara bhejo start karne ke liye |
 | `/join` | Open lobby me join karta hai (kam se kam 2 players chahiye) |
+| `/endgame` | Game ko force-end karta hai (sirf admin) |
 | `/info` | Apna ya kisi aur ka info dikhata hai |
 | `/developer` | Bot ke developer (@liesworlds) ki details dikhata hai |
 | `/commands` | Sab commands ek jagah list karta hai |
 
 **`/start`** ab buttons ke saath aata hai: **➕ Add me to your Group** (direct group me add karne ka link, admin permissions ke saath), **📋 All Commands**, aur **👨‍💻 Developer**.
 
-**Bonus:** Koi bhi sticker bheje to bot wahi sticker wapas bhej deta hai.
+**Bonus:** DM me koi bhi sticker bheje to bot wahi wapas bhejta hai. Group me sirf tabhi reply karega jab sticker **bot ke message pe reply** karke bheja gaya ho (users aapas me sticker bhejein to bot beech me nahi aata).
+
+**Word Chain game:** Ab bot free Dictionary API (dictionaryapi.dev) se check karta hai ki bheja gaya word actual English word hai ya nahi — random letters accept nahi honge.
 
 ## Railway pe Deploy Karna
 
@@ -95,13 +98,13 @@ Zyada tar moderation commands ab **do tarike** se target le sakte hain: reply ka
 
 5. **Deploy** — Railway automatically build aur run kar dega. Logs me "🤖 Bot chalu ho gaya..." dikhna chahiye.
 
-⚠️ **Note:** Warnings aur rules memory me store hote hain, to jab bhi Railway redeploy/restart karega (naya push, crash, ya sleep), ye data reset ho jayega. Agar permanent chahiye to SQLite/PostgreSQL add karna hoga — bata dena, main add kar dunga.
+⚠️ **Note:** Warnings, rules, filters, blocklist, welcome message, aur game state sab **memory me** store hote hain — Railway redeploy/restart (naya push, crash, ya sleep) hone par reset ho jayenge. Permanent chahiye to SQLite/PostgreSQL add karna hoga — bata dena.
 
 ## Important Notes
 
-- Zyada tar commands **reply-based** hain — target user ke message pe reply karke command likho.
-- Sirf group admins hi ye commands chala sakte hain (live check hota hai Telegram API se).
-- Bot khud bhi admin hona zaroori hai warna ban/mute/pin kaam nahi karenge.
+- Zyada tar moderation commands **reply ya `@username`** dono se target le sakte hain.
+- Sirf group admins hi moderation commands chala sakte hain (live check hota hai Telegram API se).
+- Bot khud bhi admin hona zaroori hai warna ban/mute/pin/promote kaam nahi karenge — group ke admin settings me bot ko "Add new admins" permission bhi dena zaroori hai `/promote` aur `/demote` ke liye.
 - **@username se target karna:** Telegram ki limitation hai ki bot sirf un users ko `@username` se resolve kar sakta hai jinhone kabhi bot ya group me interact kiya ho. Agar `@username` kaam na kare, to reply-based tarika use karo (hamesha kaam karega).
-- Warnings aur rules abhi **memory me** store hote hain — bot restart hone pe reset ho jayenge. Agar permanent chahiye to database (SQLite/PostgreSQL) add karna padega — bata dena agar wo bhi chahiye.
+- **Word Chain game** sirf **English** dictionary words accept karta hai (dictionaryapi.dev API se check hota hai). Agar API unreachable ho, to game bina check ke chalta rehta hai (fail-open).
 - 24/7 chalane ke liye ise kisi server/VPS ya Railway/Render jaisi service pe host karna hoga.
