@@ -7,18 +7,26 @@ multiplayer word chain game.
 
 Admin Commands: /kick /ban /unban /mute /unmute /warn /warnings /resetwarns
                 /promote /demote /pin /unpin /purge /rules /setrules
-                /filters /delfilters /addblocklist /removeblock
+                /filters /delfilters /addblacklist /removeblock /approve /unapprove
                 /setwelcome /delsetwelcome /endgame
 Fun Commands:   /truth /dare /tr <language> /game /join
-Other:          /start /commands /info /developer
+Other:          /start /commands /info /developer /ping
 Passive:        AI chat (@mention or reply in groups, always in DM) +
                 sticker echo (DM always, groups only when replying to the bot)
 
 Most moderation commands accept EITHER:
   - a reply to the target user's message, e.g. reply + "/ban"
   - OR "@username" as the first argument, e.g. "/ban @someuser spamming"
-  (Telegram can only resolve @username for users who have previously
+  - OR their numeric user ID, e.g. "/ban 123456789 spamming" (useful when
+    the user has no public @username)
+  (Telegram can only resolve @username/ID for users who have previously
   interacted with this bot/group — reply-based targeting always works.)
+
+/filters, /addblacklist, and /setwelcome each accept EITHER:
+  - a reply to a text message or sticker, e.g. reply-to-sticker + "/filters eren"
+  - OR inline text, e.g. "/filters eren Hello there!"
+  /addblacklist also accepts a trailing "{warn}" flag to auto-warn whoever
+  triggers that entry (e.g. "/addblacklist badword {warn}").
 
 Setup:
 1. pip install -r requirements.txt
@@ -42,6 +50,9 @@ import logging
 import httpx
 import os
 import random
+import re
+import time
+import traceback
 from datetime import timedelta
 
 from google import genai
@@ -81,9 +92,11 @@ WARNINGS: dict[int, dict[int, int]] = {}    # chat_id -> {user_id: count}
 MAX_WARNINGS = 3
 
 RULES: dict[int, str] = {}                  # chat_id -> rules text
-FILTERS: dict[int, dict[str, str]] = {}     # chat_id -> {trigger: response}
-BLOCKLIST: dict[int, set] = {}              # chat_id -> {blocked words}
-WELCOME: dict[int, str] = {}                # chat_id -> welcome template
+FILTERS: dict[int, dict[str, dict]] = {}    # chat_id -> {trigger: {"type": "text"/"sticker", "content"/"file_id": ...}}
+BLOCKLIST: dict[int, dict[str, bool]] = {}  # chat_id -> {blocked_word: warn_flag}
+STICKER_BLOCKLIST: dict[int, dict[str, bool]] = {}  # chat_id -> {sticker_unique_id: warn_flag}
+WELCOME: dict[int, dict] = {}               # chat_id -> {"type": "text"/"sticker", "content"/"file_id": ...}
+APPROVED_USERS: dict[int, set] = {}         # chat_id -> {user_id, ...} exempt from the blocklist
 GAME_STATE: dict[int, dict] = {}            # chat_id -> word-chain game state
 
 TRUTH_QUESTIONS = [
@@ -188,8 +201,9 @@ def get_target_user(update: Update):
 
 
 async def get_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Resolves the command's target user via reply OR a leading @username
-    argument (checks both — falls back to reply if @username can't be resolved).
+    """Resolves the command's target user via reply, a leading @username
+    argument, or a raw numeric user ID (checks all — falls back to reply if
+    @username/ID resolution can't fetch full details).
     Returns (target_or_None, remaining_args)."""
     args = list(context.args) if context.args else []
     if args and args[0].startswith("@"):
@@ -207,6 +221,21 @@ async def get_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if reply_user:
                 return reply_user, args[1:]
             return None, args[1:]
+
+    if args and args[0].lstrip("-").isdigit():
+        user_id = int(args[0])
+        try:
+            chat = await context.bot.get_chat(user_id)
+            full_name = getattr(chat, "first_name", None) or f"User {user_id}"
+            if getattr(chat, "last_name", None):
+                full_name += f" {chat.last_name}"
+            target = TargetUser(chat.id, full_name, getattr(chat, "username", None))
+        except Exception as e:
+            logger.warning(f"Couldn't fetch details for user id {user_id}, using the ID directly: {e}")
+            # The action itself only needs the numeric ID, so this still works
+            target = TargetUser(user_id, f"User {user_id}", None)
+        return target, args[1:]
+
     reply_user = get_target_user(update)
     if reply_user:
         return reply_user, args
@@ -224,13 +253,13 @@ async def ensure_bot_is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 NO_TARGET_TEXT = (
-    "⚠️ Specify a user — reply to their message, or use <b>@username</b> right after the command."
+    "⚠️ Specify a user — reply to their message, or use <b>@username</b> or their "
+    "<b>numeric user ID</b> right after the command."
 )
 
 
 # ---------------------------------------------------------------------------
 # BASIC COMMANDS
-# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 def build_commands_text() -> str:
     return (
@@ -252,11 +281,13 @@ def build_commands_text() -> str:
         "<b>⚙️ Group Setup</b>\n"
         "📜 /rules — view group rules\n"
         "📝 /setrules &lt;text&gt; — set group rules\n"
-        "🧩 /filters &lt;trigger&gt; &lt;response&gt; — add an auto-reply\n"
+        "🧩 /filters &lt;trigger&gt; [response] — reply to a message/sticker (or type a response) to save an auto-reply\n"
         "🗑️ /delfilters &lt;trigger&gt; — remove an auto-reply\n"
-        "🚫 /addblocklist &lt;words&gt; — block words from being sent\n"
-        "♻️ /removeblock &lt;words&gt; — unblock words\n"
-        "💬 /setwelcome &lt;text&gt; — set a welcome message ({name} = user)\n"
+        "🚫 /addblacklist &lt;words&gt; — reply to a message/sticker (or list words) to block it; add {warn} to also warn the sender\n"
+        "♻️ /removeblock &lt;words&gt; — unblock words or a replied sticker\n"
+        "✅ /approve — exempt a user from the blocklist (admins are always exempt)\n"
+        "♻️ /unapprove — remove a user's blocklist exemption\n"
+        "💬 /setwelcome [text] — reply to a message/sticker (or type text) as the welcome message — {name} or {username} mentions the new member\n"
         "🗑️ /delsetwelcome — remove the welcome message\n\n"
         "<b>🎉 Fun</b>\n"
         "🤔 /truth — random truth question\n"
@@ -266,8 +297,10 @@ def build_commands_text() -> str:
         "🙋 /join — join an open lobby\n\n"
         "<b>ℹ️ Other</b>\n"
         "👤 /info — view a user's info\n"
-        "👨‍💻 /developer — meet the bot's developer\n\n"
-        "Targeting a user: <b>reply</b> to their message, or add <b>@username</b> right after the command."
+        "👨‍💻 /developer — meet the bot's developer\n"
+        "🏓 /ping — check if the bot is online\n\n"
+        "Targeting a user: <b>reply</b> to their message, or add <b>@username</b> or their "
+        "<b>numeric ID</b> right after the command."
     )
 
 
@@ -345,6 +378,13 @@ async def developer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start = time.monotonic()
+    msg = await update.message.reply_text("🏓 Pinging...")
+    elapsed_ms = (time.monotonic() - start) * 1000
+    await msg.edit_text(f"🏓 Pong! {elapsed_ms:.0f} ms — I'm up and running.")
+
+
 # ---------------------------------------------------------------------------
 # KICK / BAN / UNBAN
 # ---------------------------------------------------------------------------
@@ -359,7 +399,7 @@ async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.ban_chat_member(chat_id, target.id)
         await context.bot.unban_chat_member(chat_id, target.id)
-        await update.message.reply_text(f"👢 {mention(target)} has been kicked from the group.", parse_mode="HTML")
+        await update.message.reply_text(f"👢 {mention(target)} has been removed from the group and is free to rejoin.", parse_mode="HTML")
     except Exception as e:
         await update.message.reply_text(f"❌ Kick failed: {friendly_error(e)}", parse_mode="HTML")
 
@@ -375,7 +415,7 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     try:
         await context.bot.ban_chat_member(chat_id, target.id)
-        await update.message.reply_text(f"🔨 {mention(target)} has been banned.\n📝 Reason: {esc(reason)}", parse_mode="HTML")
+        await update.message.reply_text(f"🔨 {mention(target)} has been permanently banned.\n📝 Reason: {esc(reason)}", parse_mode="HTML")
     except Exception as e:
         await update.message.reply_text(f"❌ Ban failed: {friendly_error(e)}", parse_mode="HTML")
 
@@ -469,7 +509,7 @@ async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     try:
         await context.bot.restrict_chat_member(update.effective_chat.id, target.id, permissions=permissions)
-        await update.message.reply_text(f"🔊 {mention(target)} has been unmuted.", parse_mode="HTML")
+        await update.message.reply_text(f"🔊 {mention(target)} may now send messages again.", parse_mode="HTML")
     except Exception as e:
         await update.message.reply_text(f"❌ Unmute failed: {friendly_error(e)}", parse_mode="HTML")
 
@@ -477,6 +517,34 @@ async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # WARNINGS
 # ---------------------------------------------------------------------------
+async def apply_warning(context: ContextTypes.DEFAULT_TYPE, chat_id: int, target, reason: str) -> int:
+    """Increments a user's warning count, auto-banning at MAX_WARNINGS.
+    Returns the new warning count. Sends its own chat messages."""
+    WARNINGS.setdefault(chat_id, {})
+    WARNINGS[chat_id][target.id] = WARNINGS[chat_id].get(target.id, 0) + 1
+    count = WARNINGS[chat_id][target.id]
+
+    await context.bot.send_message(
+        chat_id,
+        f"⚠️ {mention(target)} has received a warning. ({count}/{MAX_WARNINGS})\n📝 Reason: {esc(reason)}",
+        parse_mode="HTML",
+    )
+
+    if count >= MAX_WARNINGS:
+        try:
+            await context.bot.ban_chat_member(chat_id, target.id)
+            WARNINGS[chat_id][target.id] = 0
+            await context.bot.send_message(
+                chat_id,
+                f"🔨 {mention(target)} has reached {MAX_WARNINGS} warnings and has been removed from the group.",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            await context.bot.send_message(chat_id, f"❌ Auto-ban failed: {friendly_error(e)}", parse_mode="HTML")
+
+    return count
+
+
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context) or not await ensure_bot_is_admin(update, context):
         return
@@ -486,26 +554,7 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     reason = " ".join(args) if args else "No reason given"
-    chat_id = update.effective_chat.id
-    WARNINGS.setdefault(chat_id, {})
-    WARNINGS[chat_id][target.id] = WARNINGS[chat_id].get(target.id, 0) + 1
-    count = WARNINGS[chat_id][target.id]
-
-    await update.message.reply_text(
-        f"⚠️ {mention(target)} has been warned. ({count}/{MAX_WARNINGS})\n📝 Reason: {esc(reason)}",
-        parse_mode="HTML",
-    )
-
-    if count >= MAX_WARNINGS:
-        try:
-            await context.bot.ban_chat_member(chat_id, target.id)
-            WARNINGS[chat_id][target.id] = 0
-            await update.message.reply_text(
-                f"🔨 {mention(target)} reached {MAX_WARNINGS} warnings and has been banned.",
-                parse_mode="HTML",
-            )
-        except Exception as e:
-            await update.message.reply_text(f"❌ Auto-ban failed: {e}")
+    await apply_warning(context, update.effective_chat.id, target, reason)
 
 
 async def warnings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -662,23 +711,59 @@ async def filters_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context):
         return
     chat_id = update.effective_chat.id
-    if not context.args:
+    reply = update.message.reply_to_message
+
+    # No trigger and no reply -> show the list of active filters
+    if not context.args and not reply:
         chat_filters = FILTERS.get(chat_id, {})
         if not chat_filters:
             await update.message.reply_text(
-                "🧩 No filters set yet.\nUse: /filters <trigger> <response text>"
+                "🧩 There are no filters set up yet.\n\n"
+                "Reply to a message or sticker with <code>/filters &lt;trigger&gt;</code> to save it, "
+                "or use <code>/filters &lt;trigger&gt; &lt;response text&gt;</code>.",
+                parse_mode="HTML",
             )
             return
-        listing = "\n".join(f"• {k}" for k in chat_filters)
-        await update.message.reply_text(f"🧩 <b>Active Filters</b>\n\n{esc(listing)}", parse_mode="HTML")
+        listing = "\n".join(f"• {esc(k)}" for k in chat_filters)
+        await update.message.reply_text(f"🧩 <b>Active Filters</b>\n\n{listing}", parse_mode="HTML")
         return
+
+    # Reply-based: save whatever was replied to (text or sticker) under this trigger
+    if reply:
+        if not context.args:
+            await update.message.reply_text(
+                "⚠️ Add a trigger word after the command, e.g. <code>/filters eren</code>.", parse_mode="HTML"
+            )
+            return
+        trigger = context.args[0].lower()
+        if reply.sticker:
+            FILTERS.setdefault(chat_id, {})[trigger] = {"type": "sticker", "file_id": reply.sticker.file_id}
+            await update.message.reply_text(
+                f"✅ Got it — I'll send that sticker whenever someone says <b>{esc(trigger)}</b>.", parse_mode="HTML"
+            )
+        elif reply.text:
+            FILTERS.setdefault(chat_id, {})[trigger] = {"type": "text", "content": reply.text}
+            await update.message.reply_text(
+                f"✅ Got it — I'll reply with that message whenever someone says <b>{esc(trigger)}</b>.", parse_mode="HTML"
+            )
+        else:
+            await update.message.reply_text("⚠️ I can only save a text message or a sticker as a filter response.")
+        return
+
+    # Inline: /filters <trigger> <response text>
     if len(context.args) < 2:
-        await update.message.reply_text("⚠️ Use: /filters <trigger> <response text>")
+        await update.message.reply_text(
+            "⚠️ Use: <code>/filters &lt;trigger&gt; &lt;response text&gt;</code>, or reply to a message/sticker "
+            "with <code>/filters &lt;trigger&gt;</code>.",
+            parse_mode="HTML",
+        )
         return
     trigger = context.args[0].lower()
-    response = " ".join(context.args[1:])
-    FILTERS.setdefault(chat_id, {})[trigger] = response
-    await update.message.reply_text(f"✅ Filter added — I'll reply whenever someone says \"{trigger}\".")
+    response_text = " ".join(context.args[1:])
+    FILTERS.setdefault(chat_id, {})[trigger] = {"type": "text", "content": response_text}
+    await update.message.reply_text(
+        f"✅ Got it — I'll reply whenever someone says <b>{esc(trigger)}</b>.", parse_mode="HTML"
+    )
 
 
 async def delfilters_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -698,35 +783,118 @@ async def delfilters_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # BLOCKLIST (banned words)
 # ---------------------------------------------------------------------------
-async def addblocklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def addblacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context):
         return
-    if not context.args:
-        await update.message.reply_text("⚠️ Use: /addblocklist <word1> <word2> ...")
-        return
     chat_id = update.effective_chat.id
-    words = {w.lower() for w in context.args}
-    BLOCKLIST.setdefault(chat_id, set()).update(words)
-    await update.message.reply_text(f"🚫 Added to blocklist: {', '.join(sorted(words))}")
+    args = list(context.args) if context.args else []
+
+    # Optional trailing {warn} flag — also warns the sender when this entry is triggered
+    warn_flag = False
+    if args and args[-1].strip("{}").lower() == "warn":
+        warn_flag = True
+        args = args[:-1]
+
+    reply = update.message.reply_to_message
+    added_labels = []
+
+    if reply and reply.sticker:
+        STICKER_BLOCKLIST.setdefault(chat_id, {})[reply.sticker.file_unique_id] = warn_flag
+        added_labels.append("that sticker")
+    elif reply and reply.text:
+        phrase = reply.text.strip().lower()
+        BLOCKLIST.setdefault(chat_id, {})[phrase] = warn_flag
+        added_labels.append(phrase)
+    elif args:
+        for w in args:
+            BLOCKLIST.setdefault(chat_id, {})[w.lower()] = warn_flag
+            added_labels.append(w.lower())
+    else:
+        await update.message.reply_text(
+            "⚠️ Reply to a message or sticker with <code>/addblacklist</code>, or use "
+            "<code>/addblacklist &lt;word1&gt; &lt;word2&gt; ...</code> — add <code>{warn}</code> at the end "
+            "to also warn whoever sends it.",
+            parse_mode="HTML",
+        )
+        return
+
+    warn_note = " and will warn the sender" if warn_flag else ""
+    await update.message.reply_text(
+        f"🚫 Added to the blocklist{warn_note}: {esc(', '.join(added_labels))}"
+    )
 
 
 async def removeblock_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context):
         return
-    if not context.args:
-        await update.message.reply_text("⚠️ Use: /removeblock <word1> <word2> ...")
-        return
     chat_id = update.effective_chat.id
+    reply = update.message.reply_to_message
+
+    if reply and reply.sticker:
+        if STICKER_BLOCKLIST.get(chat_id, {}).pop(reply.sticker.file_unique_id, None) is not None:
+            await update.message.reply_text("♻️ That sticker has been removed from the blocklist.")
+        else:
+            await update.message.reply_text("⚠️ That sticker wasn't on the blocklist.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Reply to a blocked sticker with <code>/removeblock</code>, or use "
+            "<code>/removeblock &lt;word1&gt; &lt;word2&gt; ...</code>.",
+            parse_mode="HTML",
+        )
+        return
+
     removed = []
     for w in context.args:
         w = w.lower()
-        if w in BLOCKLIST.get(chat_id, set()):
-            BLOCKLIST[chat_id].discard(w)
+        if w in BLOCKLIST.get(chat_id, {}):
+            del BLOCKLIST[chat_id][w]
             removed.append(w)
     if removed:
-        await update.message.reply_text(f"♻️ Removed from blocklist: {', '.join(removed)}")
+        await update.message.reply_text(f"♻️ Removed from the blocklist: {esc(', '.join(removed))}")
     else:
-        await update.message.reply_text("⚠️ None of those words were in the blocklist.")
+        await update.message.reply_text("⚠️ None of those words were on the blocklist.")
+
+
+async def is_exempt_from_blocklist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Group admins/owner and explicitly-approved users are exempt from the
+    word and sticker blocklist."""
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    if user_id in APPROVED_USERS.get(chat_id, set()):
+        return True
+    return await is_admin(update, context, user_id)
+
+
+async def approve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_admin(update, context):
+        return
+    target, _ = await get_target(update, context)
+    if not target:
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="HTML")
+        return
+    chat_id = update.effective_chat.id
+    APPROVED_USERS.setdefault(chat_id, set()).add(target.id)
+    await update.message.reply_text(
+        f"✅ {mention(target)} is now approved — their messages will skip the blocklist filter.",
+        parse_mode="HTML",
+    )
+
+
+async def unapprove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_admin(update, context):
+        return
+    target, _ = await get_target(update, context)
+    if not target:
+        await update.message.reply_text(NO_TARGET_TEXT, parse_mode="HTML")
+        return
+    chat_id = update.effective_chat.id
+    if target.id in APPROVED_USERS.get(chat_id, set()):
+        APPROVED_USERS[chat_id].discard(target.id)
+        await update.message.reply_text(f"♻️ {mention(target)} is no longer approved.", parse_mode="HTML")
+    else:
+        await update.message.reply_text(f"⚠️ {mention(target)} wasn't approved to begin with.", parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -735,10 +903,31 @@ async def removeblock_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setwelcome_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_admin(update, context):
         return
-    if not context.args:
-        await update.message.reply_text("⚠️ Use: /setwelcome <message> — use {name} for the new member's name.")
+    chat_id = update.effective_chat.id
+    reply = update.message.reply_to_message
+
+    if reply:
+        if reply.sticker:
+            WELCOME[chat_id] = {"type": "sticker", "file_id": reply.sticker.file_id}
+            await update.message.reply_text("✅ New members will now be greeted with that sticker.")
+            return
+        if reply.text:
+            WELCOME[chat_id] = {"type": "text", "content": reply.text}
+            await update.message.reply_text("✅ Welcome message has been set.")
+            return
+        await update.message.reply_text("⚠️ I can only use a text message or a sticker as the welcome message.")
         return
-    WELCOME[update.effective_chat.id] = " ".join(context.args)
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Reply to a message or sticker with <code>/setwelcome</code>, or use "
+            "<code>/setwelcome &lt;message&gt;</code> — you can use <code>{name}</code> or "
+            "<code>{username}</code> to mention the new member.",
+            parse_mode="HTML",
+        )
+        return
+
+    WELCOME[chat_id] = {"type": "text", "content": " ".join(context.args)}
     await update.message.reply_text("✅ Welcome message has been set.")
 
 
@@ -754,14 +943,22 @@ async def delsetwelcome_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    template = WELCOME.get(chat_id)
+    welcome = WELCOME.get(chat_id)
     for member in update.message.new_chat_members:
         if member.id == context.bot.id:
             continue  # don't welcome the bot itself
-        if template:
-            text = esc(template).replace("{name}", mention(member))
+
+        if welcome and welcome["type"] == "sticker":
+            try:
+                await update.message.reply_sticker(welcome["file_id"])
+            except Exception as e:
+                logger.warning(f"Welcome sticker send failed: {e}")
+            continue
+
+        if welcome and welcome["type"] == "text":
+            text = esc(welcome["content"]).replace("{name}", mention(member)).replace("{username}", mention(member))
         else:
-            text = f"🎉 Welcome to the group, {mention(member)}!"
+            text = f"🎉 Welcome to the group, {mention(member)}! We're glad to have you here."
         await update.message.reply_text(text, parse_mode="HTML")
 
 
@@ -1073,6 +1270,20 @@ async def sticker_echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.sticker:
         return
 
+    chat_id = update.effective_chat.id
+    sticker = update.message.sticker
+
+    blocked_stickers = STICKER_BLOCKLIST.get(chat_id, {})
+    if sticker.file_unique_id in blocked_stickers and not await is_exempt_from_blocklist(update, context):
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.warning(f"Sticker blocklist delete failed: {e}")
+        await context.bot.send_message(chat_id, "🚫 A sticker was removed for being on the blocklist.")
+        if blocked_stickers[sticker.file_unique_id]:
+            await apply_warning(context, chat_id, update.effective_user, "sent a blocked sticker")
+        return
+
     if update.effective_chat.type != ChatType.PRIVATE:
         # In groups, only react if this sticker was sent as a reply to the bot
         reply = update.message.reply_to_message
@@ -1080,7 +1291,7 @@ async def sticker_echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     try:
-        await update.message.reply_sticker(update.message.sticker.file_id)
+        await update.message.reply_sticker(sticker.file_id)
     except Exception as e:
         logger.error(f"Sticker echo error: {e}")
 
@@ -1101,18 +1312,24 @@ async def handle_group_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         lowered = text.lower()
-        for word in BLOCKLIST.get(chat_id, set()):
-            if word in lowered:
-                try:
-                    await update.message.delete()
-                except Exception as e:
-                    logger.warning(f"Blocklist delete failed: {e}")
-                await context.bot.send_message(chat_id, "🚫 A message was removed for containing a blocked word.")
-                return
+        if not await is_exempt_from_blocklist(update, context):
+            for word, warn_flag in BLOCKLIST.get(chat_id, {}).items():
+                if re.search(rf"\b{re.escape(word)}\b", lowered):
+                    try:
+                        await update.message.delete()
+                    except Exception as e:
+                        logger.warning(f"Blocklist delete failed: {e}")
+                    await context.bot.send_message(chat_id, "🚫 A message was removed for containing a blocked word.")
+                    if warn_flag:
+                        await apply_warning(context, chat_id, update.effective_user, "used a blocked word")
+                    return
 
         for trigger, response in FILTERS.get(chat_id, {}).items():
-            if trigger in lowered:
-                await update.message.reply_text(response)
+            if re.search(rf"\b{re.escape(trigger)}\b", lowered):
+                if response["type"] == "sticker":
+                    await update.message.reply_sticker(response["file_id"])
+                else:
+                    await update.message.reply_text(response["content"])
                 return
 
         await chat_with_ai(update, context)
@@ -1128,6 +1345,7 @@ BOT_COMMANDS = [
     BotCommand("commands", "📋 List all bot commands"),
     BotCommand("info", "👤 View user info"),
     BotCommand("developer", "👨‍💻 Meet the bot's developer"),
+    BotCommand("ping", "🏓 Check if the bot is online"),
     BotCommand("kick", "👢 Remove a user (can rejoin)"),
     BotCommand("ban", "🔨 Permanently ban a user"),
     BotCommand("unban", "✅ Unban a user"),
@@ -1145,8 +1363,10 @@ BOT_COMMANDS = [
     BotCommand("setrules", "📝 Set group rules"),
     BotCommand("filters", "🧩 Add an auto-reply filter"),
     BotCommand("delfilters", "🗑️ Remove an auto-reply filter"),
-    BotCommand("addblocklist", "🚫 Block words in the group"),
-    BotCommand("removeblock", "♻️ Unblock words"),
+    BotCommand("addblacklist", "🚫 Block words or a sticker"),
+    BotCommand("removeblock", "♻️ Unblock a word or sticker"),
+    BotCommand("approve", "✅ Exempt a user from the blocklist"),
+    BotCommand("unapprove", "♻️ Remove a user's blocklist exemption"),
     BotCommand("setwelcome", "💬 Set the welcome message"),
     BotCommand("delsetwelcome", "🗑️ Remove the welcome message"),
     BotCommand("truth", "🤔 Get a random truth question"),
@@ -1162,6 +1382,26 @@ async def post_init(app: Application):
     await app.bot.set_my_commands(BOT_COMMANDS)
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catches any exception not already handled inside a specific handler,
+    so one bad update can never take the whole bot down. Optionally reports
+    the traceback to the developer for debugging."""
+    logger.error("Unhandled exception while processing an update:", exc_info=context.error)
+
+    if DEVELOPER_CHAT_ID:
+        try:
+            tb_string = "".join(
+                traceback.format_exception(None, context.error, context.error.__traceback__)
+            )
+            await context.bot.send_message(
+                int(DEVELOPER_CHAT_ID),
+                f"⚠️ <b>Bot error</b>\n\n<code>{esc(tb_string[-3500:])}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass  # never let error reporting itself crash anything
+
+
 def main():
     if BOT_TOKEN == "PUT_YOUR_BOT_TOKEN_HERE":
         print("⚠️  Pehle BOT_TOKEN set karo (script me ya TELEGRAM_BOT_TOKEN env var me)!")
@@ -1175,6 +1415,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_commands_callback, pattern="^show_commands$"))
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("developer", developer))
+    app.add_handler(CommandHandler("ping", ping_cmd))
 
     app.add_handler(CommandHandler("kick", kick))
     app.add_handler(CommandHandler("ban", ban))
@@ -1200,8 +1441,11 @@ def main():
     app.add_handler(CommandHandler("filters", filters_cmd))
     app.add_handler(CommandHandler("delfilters", delfilters_cmd))
 
-    app.add_handler(CommandHandler("addblocklist", addblocklist_cmd))
+    app.add_handler(CommandHandler("addblacklist", addblacklist_cmd))
+    app.add_handler(CommandHandler("addblocklist", addblacklist_cmd))  # backward-compat alias
     app.add_handler(CommandHandler("removeblock", removeblock_cmd))
+    app.add_handler(CommandHandler("approve", approve_cmd))
+    app.add_handler(CommandHandler("unapprove", unapprove_cmd))
 
     app.add_handler(CommandHandler("setwelcome", setwelcome_cmd))
     app.add_handler(CommandHandler("delsetwelcome", delsetwelcome_cmd))
@@ -1216,6 +1460,8 @@ def main():
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     app.add_handler(MessageHandler(filters.Sticker.ALL, sticker_echo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_text))
+
+    app.add_error_handler(error_handler)
 
     print("🤖 Bot chalu ho gaya...")
     app.run_polling()
