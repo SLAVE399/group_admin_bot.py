@@ -61,7 +61,7 @@ Zyada tar moderation commands ab **teen tarike** se target le sakte hain: reply 
 | `/removeblock <words>` | Blocklist se words hataata hai (ya sticker pe reply karke hatao) |
 | `/approve` | User ko blocklist se exempt karta hai (admins pehle se hi exempt hote hain) |
 | `/unapprove` | User ki blocklist exemption hataata hai |
-| `/setwelcome [text]` | Reply karke koi message/sticker ke saath welcome message set karo, ya `/setwelcome <text>` likho — `{name}` ya `{username}` se naye member ko mention karo |
+| `/setwelcome [text]` | Reply karke koi message/sticker ke saath welcome message set karo, ya `/setwelcome <text>` likho — `{name}` se naye member ka naam aayega, `{username}` se unka `@username` (agar ho) |
 | `/delsetwelcome` | Welcome message hataata hai |
 | `/truth` | Random truth question deta hai |
 | `/dare` | Random dare challenge deta hai |
@@ -70,8 +70,12 @@ Zyada tar moderation commands ab **teen tarike** se target le sakte hain: reply 
 | `/join` | Open lobby me join karta hai (kam se kam 2 players chahiye) |
 | `/endgame` | Game ko force-end karta hai (sirf admin) |
 | `/info` | Apna ya kisi aur ka info dikhata hai |
+| `/admins` | Group ke sab admins aur owner ki list dikhata hai |
 | `/developer` | Bot ke developer (@liesworlds) ki details dikhata hai |
 | `/ping` | Bot online hai ya nahi, aur response speed check karta hai |
+| `/filterlist` | Kitne filters active hain, list ke saath dikhata hai |
+| `/blocklist` | Kitne words/stickers blocklist me hain, list ke saath dikhata hai |
+| `/google <question>` | Google Search se live jawab deta hai (Gemini grounding se) |
 | `/commands` | Sab commands ek jagah list karta hai |
 
 **`/start`** ab buttons ke saath aata hai: **➕ Add me to your Group** (direct group me add karne ka link, admin permissions ke saath), **📋 All Commands**, aur **👨‍💻 Developer**.
