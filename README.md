@@ -96,7 +96,7 @@ Zyada tar moderation commands ab **teen tarike** se target le sakte hain: reply 
    - Project ke "Variables" tab me jao
    - Add karo: `TELEGRAM_BOT_TOKEN` = `apna_bot_token`
    - Add karo: `GEMINI_API_KEY` = `apna_free_gemini_key` (aistudio.google.com/apikey se free milegi)
-   - Add karo (optional): `DEVELOPER_CHAT_ID` = `apna_numeric_telegram_id` — isse set karne par, jab bhi koi user bot ko DM me `/start` karega, tumhe notification milegi (naye user ka naam + username + ID ke saath). Apni ID pata karne ke liye Telegram me @userinfobot ko message karo.
+   - Add karo (optional): `DEVELOPER_CHAT_ID` = `apna_numeric_telegram_id` — isse set karne par, jab bhi koi user bot ko DM me `/start` karega, tumhe notification milegi (naye user ka naam + username + ID ke saath). Ye **`/broadcast`** command ke liye bhi zaroori hai (neeche dekho). Apni ID pata karne ke liye Telegram me @userinfobot ko message karo.
    - (Isliye script me hardcode nahi kiya token — env var se hi lega)
 
 4. **Service type check karo:**
@@ -108,6 +108,8 @@ Zyada tar moderation commands ab **teen tarike** se target le sakte hain: reply 
 ⚠️ **Note:** Warnings, rules, filters, blocklist, welcome message, aur game state sab **memory me** store hote hain — Railway redeploy/restart (naya push, crash, ya sleep) hone par reset ho jayenge. Permanent chahiye to SQLite/PostgreSQL add karna hoga — bata dena.
 
 **Reliability:** Bot me ab ek global error handler hai — koi bhi unexpected bug aaye to sirf wo ek action fail hoga, **pura bot crash nahi hoga**. Agar `DEVELOPER_CHAT_ID` set hai, to aisi koi bhi error tumhe DM me detail ke saath report ho jayegi (debugging ke liye).
+
+**`/broadcast` (sirf owner):** Ye command sirf `DEVELOPER_CHAT_ID` wale user ke liye kaam karta hai — public `/commands` list me nahi dikhega. Reply karke `/broadcast` (message/sticker ke saath) ya `/broadcast <message>` likh ke bot un sabhi chats me announcement bhej dega jinme usne kabhi koi message dekha ho.
 
 ## Important Notes
 
