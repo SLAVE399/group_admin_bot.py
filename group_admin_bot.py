@@ -12,6 +12,10 @@ Admin Commands: /kick /ban /unban /mute /unmute /warn /warnings /resetwarns
                 /setwelcome /delsetwelcome /endgame
 Fun Commands:   /truth /dare /tr <language> /google <question> /game /join
 Other:          /start /commands /info /admins /developer /ping
+Owner-only:     /broadcast <message> — reply to a message/sticker, or pass
+                text directly. Sends an announcement to every chat the bot
+                has seen. Restricted to the DEVELOPER_CHAT_ID user and
+                intentionally left out of the public /commands menu.
 Passive:        AI chat (@mention or reply in groups, always in DM) +
                 sticker echo (DM always, groups only when replying to the bot)
 
@@ -99,6 +103,7 @@ BLOCKLIST: dict[int, dict[str, bool]] = {}  # chat_id -> {blocked_word: warn_fla
 STICKER_BLOCKLIST: dict[int, dict[str, bool]] = {}  # chat_id -> {sticker_unique_id: warn_flag}
 WELCOME: dict[int, dict] = {}               # chat_id -> {"type": "text"/"sticker", "content"/"file_id": ...}
 APPROVED_USERS: dict[int, set] = {}         # chat_id -> {user_id, ...} exempt from the blocklist
+KNOWN_CHATS: set = set()                    # every chat_id the bot has seen a message from
 GAME_STATE: dict[int, dict] = {}            # chat_id -> word-chain game state
 
 TRUTH_QUESTIONS = [
@@ -607,6 +612,15 @@ async def resetwarns(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # PROMOTE / DEMOTE
 # ---------------------------------------------------------------------------
+def friendly_gemini_error(e: Exception) -> str:
+    """Turns raw Gemini API errors (especially free-tier rate limits) into a
+    friendly, plain-language message."""
+    text = str(e)
+    if "429" in text or "RESOURCE_EXHAUSTED" in text.upper() or "quota" in text.lower():
+        return "⏳ I've hit my AI usage limit for now — please try again in a minute or two."
+    return "😕 Something went wrong on my end — please try again shortly."
+
+
 def friendly_error(e: Exception) -> str:
     """Turns common raw Telegram API errors into a helpful hint."""
     text = str(e)
@@ -1076,7 +1090,7 @@ async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🌐 <b>Translation ({esc(target_lang)}):</b>\n{esc(translated)}", parse_mode="HTML")
     except Exception as e:
         logger.error(f"Translate error: {e}")
-        await update.message.reply_text("😕 Couldn't get that translated right now — please try again shortly.")
+        await update.message.reply_text(friendly_gemini_error(e))
 
 
 async def google_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1103,7 +1117,7 @@ async def google_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Google search error: {e}")
-        await update.message.reply_text("😕 Couldn't search right now — please try again shortly.")
+        await update.message.reply_text(friendly_gemini_error(e))
 
 
 # ---------------------------------------------------------------------------
@@ -1354,7 +1368,7 @@ async def chat_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply_text)
     except Exception as e:
         logger.error(f"AI chat error: {e}")
-        await update.message.reply_text("😕 Something went wrong on my end — mind trying again in a moment?")
+        await update.message.reply_text(friendly_gemini_error(e))
 
 
 # ---------------------------------------------------------------------------
@@ -1500,6 +1514,62 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             pass  # never let error reporting itself crash anything
 
 
+async def track_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Silently records every chat the bot has seen a message from, so
+    /broadcast knows where it can deliver an announcement."""
+    if update.effective_chat:
+        KNOWN_CHATS.add(update.effective_chat.id)
+
+
+def is_owner(update: Update) -> bool:
+    if not DEVELOPER_CHAT_ID:
+        return False
+    return str(update.effective_user.id) == str(DEVELOPER_CHAT_ID).strip()
+
+
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        await update.message.reply_text("❌ This command is reserved for my owner.")
+        return
+
+    reply = update.message.reply_to_message
+    sent, failed = 0, 0
+
+    async def send_to_all(send_fn):
+        nonlocal sent, failed
+        for chat_id in list(KNOWN_CHATS):
+            try:
+                await send_fn(chat_id)
+                sent += 1
+            except Exception as e:
+                failed += 1
+                logger.warning(f"Broadcast to {chat_id} failed: {e}")
+
+    if reply and reply.sticker:
+        await send_to_all(lambda chat_id: context.bot.send_sticker(chat_id, reply.sticker.file_id))
+    elif reply and reply.text:
+        text = reply.text
+        await send_to_all(
+            lambda chat_id: context.bot.send_message(
+                chat_id, f"📢 <b>Announcement</b>\n\n{esc(text)}", parse_mode="HTML"
+            )
+        )
+    elif context.args:
+        text = " ".join(context.args)
+        await send_to_all(
+            lambda chat_id: context.bot.send_message(
+                chat_id, f"📢 <b>Announcement</b>\n\n{esc(text)}", parse_mode="HTML"
+            )
+        )
+    else:
+        await update.message.reply_text(
+            "📢 Reply to a message or sticker with /broadcast, or use /broadcast <message>."
+        )
+        return
+
+    await update.message.reply_text(f"📢 Broadcast sent — delivered to {sent} chat(s), failed for {failed}.")
+
+
 def main():
     if BOT_TOKEN == "PUT_YOUR_BOT_TOKEN_HERE":
         print("⚠️  Pehle BOT_TOKEN set karo (script me ya TELEGRAM_BOT_TOKEN env var me)!")
@@ -1515,6 +1585,10 @@ def main():
     app.add_handler(CommandHandler("admins", admins_cmd))
     app.add_handler(CommandHandler("developer", developer))
     app.add_handler(CommandHandler("ping", ping_cmd))
+    app.add_handler(CommandHandler("broadcast", broadcast_cmd))
+
+    # Runs in its own group so it never blocks the normal command/message handlers
+    app.add_handler(MessageHandler(filters.ALL, track_chat), group=-1)
 
     app.add_handler(CommandHandler("kick", kick))
     app.add_handler(CommandHandler("ban", ban))
