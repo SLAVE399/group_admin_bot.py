@@ -111,6 +111,17 @@ Zyada tar moderation commands ab **teen tarike** se target le sakte hain: reply 
 
 **`/broadcast` (sirf owner):** Ye command sirf `DEVELOPER_CHAT_ID` wale user ke liye kaam karta hai — public `/commands` list me nahi dikhega. Reply karke `/broadcast` (message/sticker ke saath) ya `/broadcast <message>` likh ke bot un sabhi chats me announcement bhej dega jinme usne kabhi koi message dekha ho.
 
+**`/stats` (sirf owner):** Kitne groups me bot hai, kitne users ne DM kiya hai, aur har group ka **naam + link** (agar public username hai, ya bot admin hai invite permission ke saath) dikhata hai.
+
+⚠️ **Zaroori — persistence ke bina counts galat aayenge:** `/stats` aur `/broadcast` ke liye bot jo chats "dekhta" hai wo `known_chats.json` file me save hoti hain. **Lekin** Railway ka default filesystem **temporary** hai — jab bhi naya deploy karo, ye file bhi delete ho jati hai aur count sirf unhi chats ka aayega jinhone restart ke baad dobara message bheja ho. Isko permanently fix karne ke liye:
+
+1. Railway project me **"+ New"** → **"Volume"** add karo
+2. Usko apni service se attach karo, mount path do jaise `/data`
+3. Variables tab me add karo: `KNOWN_CHATS_FILE` = `/data/known_chats.json`
+4. Redeploy karo — ab ye file volume me save hogi aur **future redeploys me bhi bachegi**
+
+(Agar volume setup nahi karna, to bot bina kisi error ke chalega — bas ye count sirf last-restart-ke-baad wale users tak accurate rahega.)
+
 ## Important Notes
 
 - Zyada tar moderation commands **reply ya `@username`** dono se target le sakte hain.
