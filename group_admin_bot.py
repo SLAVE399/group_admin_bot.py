@@ -14,8 +14,10 @@ Fun Commands:   /truth /dare /tr <language> /google <question> /game /join
 Other:          /start /commands /info /admins /developer /ping
 Owner-only:     /broadcast <message> — reply to a message/sticker, or pass
                 text directly. Sends an announcement to every chat the bot
-                has seen. Restricted to the DEVELOPER_CHAT_ID user and
-                intentionally left out of the public /commands menu.
+                has seen. /stats — shows how many groups the bot is active
+                in and how many users have DM'd it. Both are restricted to
+                the DEVELOPER_CHAT_ID user and intentionally left out of
+                the public /commands menu.
 Passive:        AI chat (@mention or reply in groups, always in DM) +
                 sticker echo (DM always, groups only when replying to the bot)
 
@@ -1570,6 +1572,25 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📢 Broadcast sent — delivered to {sent} chat(s), failed for {failed}.")
 
 
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        await update.message.reply_text("❌ This command is reserved for my owner.")
+        return
+
+    # Telegram convention: group/supergroup/channel chat IDs are negative,
+    # private DM chat IDs are positive (equal to the user's own ID).
+    groups = sum(1 for c in KNOWN_CHATS if c < 0)
+    dms = sum(1 for c in KNOWN_CHATS if c > 0)
+
+    await update.message.reply_text(
+        f"📊 <b>Bot Stats</b>\n\n"
+        f"👥 Groups I'm active in: <b>{groups}</b>\n"
+        f"💬 Users who've DM'd me: <b>{dms}</b>\n"
+        f"📡 Total known chats: <b>{len(KNOWN_CHATS)}</b>",
+        parse_mode="HTML",
+    )
+
+
 def main():
     if BOT_TOKEN == "PUT_YOUR_BOT_TOKEN_HERE":
         print("⚠️  Pehle BOT_TOKEN set karo (script me ya TELEGRAM_BOT_TOKEN env var me)!")
@@ -1586,6 +1607,7 @@ def main():
     app.add_handler(CommandHandler("developer", developer))
     app.add_handler(CommandHandler("ping", ping_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
 
     # Runs in its own group so it never blocks the normal command/message handlers
     app.add_handler(MessageHandler(filters.ALL, track_chat), group=-1)
