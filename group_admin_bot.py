@@ -57,6 +57,7 @@ import logging
 import httpx
 import os
 import random
+import json
 import re
 import time
 import traceback
@@ -105,7 +106,26 @@ BLOCKLIST: dict[int, dict[str, bool]] = {}  # chat_id -> {blocked_word: warn_fla
 STICKER_BLOCKLIST: dict[int, dict[str, bool]] = {}  # chat_id -> {sticker_unique_id: warn_flag}
 WELCOME: dict[int, dict] = {}               # chat_id -> {"type": "text"/"sticker", "content"/"file_id": ...}
 APPROVED_USERS: dict[int, set] = {}         # chat_id -> {user_id, ...} exempt from the blocklist
-KNOWN_CHATS: set = set()                    # every chat_id the bot has seen a message from
+KNOWN_CHATS_FILE = os.environ.get("KNOWN_CHATS_FILE", "known_chats.json")
+
+
+def load_known_chats() -> set:
+    try:
+        with open(KNOWN_CHATS_FILE, "r") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()  # file doesn't exist yet, or is unreadable — start fresh
+
+
+def save_known_chats() -> None:
+    try:
+        with open(KNOWN_CHATS_FILE, "w") as f:
+            json.dump(list(KNOWN_CHATS), f)
+    except Exception as e:
+        logger.warning(f"Couldn't save known chats to {KNOWN_CHATS_FILE}: {e}")
+
+
+KNOWN_CHATS: set = load_known_chats()   # every chat_id the bot has seen a message from
 GAME_STATE: dict[int, dict] = {}            # chat_id -> word-chain game state
 
 TRUTH_QUESTIONS = [
@@ -1518,9 +1538,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def track_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Silently records every chat the bot has seen a message from, so
-    /broadcast knows where it can deliver an announcement."""
+    /broadcast and /stats know about it — persisted to disk so the list
+    survives a restart (as long as KNOWN_CHATS_FILE points to persistent
+    storage, e.g. a mounted volume)."""
     if update.effective_chat:
-        KNOWN_CHATS.add(update.effective_chat.id)
+        chat_id = update.effective_chat.id
+        if chat_id not in KNOWN_CHATS:
+            KNOWN_CHATS.add(chat_id)
+            save_known_chats()
 
 
 def is_owner(update: Update) -> bool:
@@ -1579,16 +1604,37 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Telegram convention: group/supergroup/channel chat IDs are negative,
     # private DM chat IDs are positive (equal to the user's own ID).
-    groups = sum(1 for c in KNOWN_CHATS if c < 0)
-    dms = sum(1 for c in KNOWN_CHATS if c > 0)
+    group_ids = [c for c in KNOWN_CHATS if c < 0]
+    dm_count = sum(1 for c in KNOWN_CHATS if c > 0)
 
-    await update.message.reply_text(
-        f"📊 <b>Bot Stats</b>\n\n"
-        f"👥 Groups I'm active in: <b>{groups}</b>\n"
-        f"💬 Users who've DM'd me: <b>{dms}</b>\n"
-        f"📡 Total known chats: <b>{len(KNOWN_CHATS)}</b>",
-        parse_mode="HTML",
-    )
+    lines = [
+        f"📊 <b>Bot Stats</b>\n",
+        f"👥 Groups I'm active in: <b>{len(group_ids)}</b>",
+        f"💬 Users who've DM'd me: <b>{dm_count}</b>",
+        f"📡 Total known chats: <b>{len(KNOWN_CHATS)}</b>\n",
+    ]
+
+    if group_ids:
+        lines.append("<b>Group list:</b>")
+        for chat_id in group_ids:
+            try:
+                chat = await context.bot.get_chat(chat_id)
+                title = esc(chat.title or f"Chat {chat_id}")
+                if chat.username:
+                    link = f"https://t.me/{chat.username}"
+                elif chat.invite_link:
+                    link = chat.invite_link  # existing primary link — never revoked/regenerated
+                else:
+                    link = None
+
+                if link:
+                    lines.append(f"• <a href=\"{link}\">{title}</a>")
+                else:
+                    lines.append(f"• {title} (no link — I need admin + invite permission to see one)")
+            except Exception as e:
+                lines.append(f"• Chat {chat_id} — couldn't fetch info ({esc(str(e))})")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
 
 
 def main():
